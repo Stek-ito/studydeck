@@ -229,4 +229,37 @@ SELECT table_name, engine, row_format FROM information_schema.tables WHERE table
 
 ## Paso 7: Arrancar y primer commit
 
-*Pendiente.*
+### 7.1. Servidor de desarrollo
+```bash
+php artisan serve   # ✅ Server running on [http://127.0.0.1:8000]
+```
+- Usa el servidor integrado de PHP (`php -S`) apuntando a `public/index.php`, con el PHP de la terminal (8.5). Solo para desarrollo; en producción, nginx o Apache con PHP-FPM.
+- Equivale a `symfony server:start`.
+- No se usa el Apache de WAMP: tiene su propia versión de PHP y necesitaría un *virtual host*.
+
+Comprobaciones:
+- `http://127.0.0.1:8000` → ✅ página de bienvenida.
+- `http://127.0.0.1:8000/up` → ✅ "Application up". Es la ruta de salud (`health: '/up'` en `bootstrap/app.php`), para balanceadores, Docker o monitorización.
+- En MySQL: `SELECT id, ip_address, last_activity FROM studydeck.sessions;` → ✅ una fila por navegador (`SESSION_DRIVER=database`).
+- Parar con Ctrl+C.
+
+### 7.2. Repositorio git
+```bash
+git init -b main      # rama principal "main" (sin -b, git 2.38 usaría "master")
+git status            # revisar qué entra ANTES de añadir
+git add .
+git commit -m "..."
+git log --oneline     # ✅ 4fff5f8 (HEAD -> main) [START]: StudyDeck project with Laravel and MySQL. Setup and docs
+```
+
+Qué **no** se sube (lo excluye el `.gitignore`):
+
+| Ignorado | Por qué | En Symfony |
+|---|---|---|
+| `.env` | Secretos (`APP_KEY`, contraseña de MySQL) | `.env.local` |
+| `vendor/`, `node_modules/` | Se regeneran con `composer install` / `npm install` | Igual |
+| Logs y caché de `storage/` | Se generan al ejecutar | `var/` |
+
+El `composer.lock` **sí** se sube: garantiza que se instalen exactamente las mismas versiones en cualquier máquina.
+
+Finales de línea: `.gitattributes` (`* text=auto eol=lf`) fuerza `LF` aunque Windows tenga `core.autocrlf=true`.

@@ -40,7 +40,7 @@ Cada fase del plan de Laravel se practica construyendo una pieza de StudyDeck, e
 
 | Fase | Tema | Pieza de StudyDeck | Estado |
 |---|---|---|---|
-| 0 | Diagnóstico y entorno | Proyecto creado y arrancando | [ ] |
+| 0 | Diagnóstico y entorno | Proyecto creado y arrancando | [x] 2026-11-04 |
 | 1 | Routing, controladores, middleware | API de mazos y fichas en memoria | [ ] |
 | 2 | Eloquent ORM | Modelo de datos y seeders | [ ] |
 | 3 | Blade, validación, auth | Pantalla de estudio, subida de PDFs, login | [ ] |
@@ -60,7 +60,7 @@ Proyecto en `C:\Roberto\StudyDeck`. Antes de trabajar, en cada terminal nueva:
 4. [x] Proyecto creado con `composer create-project laravel/laravel .` → Laravel 13.39.0.
 5. [x] Estructura comparada con `symfony/skeleton`; conceptos: `env()`, `.env` frente a Symfony, middleware, autenticación frente a autorización.
 6. [x] MySQL con usuario propio (`studydeck`), motor `InnoDB ROW_FORMAT=DYNAMIC` y `php artisan migrate` (9 tablas).
-7. [ ] `php artisan serve` y primer commit (en inglés).
+7. [x] `php artisan serve` (bienvenida, `/up` y sesión guardada en MySQL) y primer commit `4fff5f8` en la rama `main`.
 
 Guía detallada de la fase: [fase-0-entorno.md](fase-0-entorno.md). Problemas encontrados y su solución: [troubleshooting.md](troubleshooting.md).
 
