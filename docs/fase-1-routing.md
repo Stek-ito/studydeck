@@ -10,7 +10,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md).
 2. [x] Crear `routes/api.php` a mano y registrarlo en `bootstrap/app.php`
 3. [x] Primer controlador: `DeckController` con `index` y `show`
 4. [x] Parámetros de ruta, restricciones y errores 404
-5. [ ] Recurso anidado: `CardController` (`/api/decks/{deck}/cards`)
+5. [x] Recurso anidado: `CardController` (`/api/decks/{deck}/cards`)
 6. [ ] Middleware propio: `MeasureResponseTime`
 7. [ ] Commit
 

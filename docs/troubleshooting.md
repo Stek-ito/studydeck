@@ -12,6 +12,7 @@ Formato de cada problema: **síntoma → causa → cómo diagnosticarlo → solu
 5. [Necesito otra versión de PHP sin romper los otros proyectos](#5-necesito-otra-versión-de-php-sin-romper-los-otros-proyectos)
 6. [Composer lanza avisos "Deprecated" con PHP nuevo](#6-composer-lanza-avisos-deprecated-con-php-nuevo)
 7. [`composer create-project` crea el proyecto en una subcarpeta](#7-composer-create-project-crea-el-proyecto-en-una-subcarpeta)
+8. [`git push`: "Permission denied to OtraCuenta" (403) con dos cuentas de GitHub](#8-git-push-permission-denied-to-otracuenta-403-con-dos-cuentas-de-github)
 
 ---
 
@@ -225,3 +226,65 @@ Remove-Item .\studydeck
 php artisan --version
 ```
 Moverlo no rompe nada: las rutas de Laravel y de `vendor/autoload.php` son relativas a la raíz del proyecto. La única excepción sería una caché de configuración (`php artisan config:cache`), que guarda rutas absolutas; si existe, se borra con `php artisan config:clear`.
+
+---
+
+## 8. `git push`: "Permission denied to OtraCuenta" (403) con dos cuentas de GitHub
+
+**Síntoma:**
+```
+remote: Permission to Stek-ito/studydeck.git denied to RobertoCI.
+fatal: unable to access 'https://github.com/Stek-ito/studydeck.git/': The requested URL returned error: 403
+```
+El repositorio es de la cuenta personal (`Stek-ito`), pero GitHub dice que quien intenta subir es la cuenta del trabajo (`RobertoCI`).
+
+**Causa:** con HTTPS, Git no envía tu `user.name`/`user.email` para autenticarse (esos solo firman los commits). Pide la credencial al **Git Credential Manager** (`credential.helper = manager-core`), que guarda **una credencial por host**: `github.com`. Como la primera cuenta que se usó en este equipo fue la del trabajo, esa es la que entrega para cualquier repositorio de `github.com`.
+
+**Cómo diagnosticarlo:**
+```bash
+git config --get credential.helper   # manager-core → credenciales en el Administrador de credenciales de Windows
+git remote -v                        # la URL no lleva usuario → usa la credencial "por defecto" del host
+git log --format="%an <%ae>" -1      # el autor del commit es otra cosa: no influye en el permiso de push
+```
+
+**Solución:** poner el usuario en la URL del remoto. El Credential Manager guarda entonces una credencial **distinta** para `Stek-ito@github.com` y la pide la primera vez (se abre el navegador para iniciar sesión con esa cuenta):
+```bash
+git remote set-url origin https://Stek-ito@github.com/Stek-ito/studydeck.git
+git push -u origin main
+```
+
+**Por qué esta solución y no otra:**
+- **Borrar la credencial de `github.com`** en el Administrador de credenciales de Windows: funciona, pero rompe los repos del trabajo, que pedirían login de nuevo, y el problema se invierte.
+- **SSH con dos claves y alias en `~/.ssh/config`** (`Host github-personal`): es la solución "de libro" para varias cuentas, pero implica crear claves y configuración global. Útil si el problema se repite en muchos repos.
+- **Usuario en la URL:** es un cambio solo de este repositorio (`.git/config`), no toca nada global y cada cuenta conserva su credencial. Para cada repo personal nuevo, clonar o añadir el remoto ya con `https://Stek-ito@github.com/...`.
+
+**Si la otra cuenta ya no se usa (lo que se hizo aquí):** quitarla del equipo, y así `github.com` queda solo para la cuenta personal.
+```powershell
+cmdkey /list | Select-String github -Context 0,3     # ver qué hay guardado y con qué usuario
+cmdkey /delete:git:https://github.com                # credencial de Git (Git Credential Manager)
+cmdkey /delete:fork:https://github.com.RobertoCI.oauth_token   # token del cliente Fork (o quitar la cuenta desde Fork)
+ssh -T git@github.com                                # "Hi <usuario>!": a qué cuenta pertenece tu clave SSH
+```
+En el siguiente `git push`, el Credential Manager pide iniciar sesión y guarda la cuenta nueva como la de `github.com`.
+
+**Credenciales locales frente a cuenta en GitHub:** `cmdkey` solo borra lo guardado en el PC. La cuenta y las claves SSH dadas de alta en ella viven en GitHub y se quitan desde la web (Settings → SSH and GPG keys, o Settings → Account → Delete account). Con SSH el PC no guarda credenciales de GitHub: es GitHub quien sabe a qué cuenta pertenece cada clave pública, y una misma clave solo puede estar en **una** cuenta ("Key is already in use").
+
+**Clave SSH propia para GitHub** (sin tocar `id_rsa`, que se usa para los servidores):
+```powershell
+ssh-keygen -t ed25519 -C "caselles.iribarne.roberto@gmail.com" -f "$env:USERPROFILE\.ssh\id_ed25519_github"
+Get-Content "$env:USERPROFILE\.ssh\id_ed25519_github.pub" | Set-Clipboard   # pegar en GitHub → Settings → SSH and GPG keys → New SSH key
+```
+En `~/.ssh/config`:
+```
+Host github.com
+    User git
+    IdentityFile C:\Users\rocas\.ssh\id_ed25519_github
+    IdentitiesOnly yes
+```
+**Limpieza completa de una cuenta antigua** (la que se hizo aquí: cuenta y clave de un trabajo anterior):
+1. Credenciales de Windows: los `cmdkey /delete` de arriba.
+2. Aplicaciones con sesión propia: Fork (File → Accounts), GitHub Desktop (File → Options → Accounts → Sign out), VS Code (icono de cuentas, abajo a la izquierda → Sign out).
+3. Clave SSH antigua: sacarla de `~/.ssh` (primero a una carpeta de copia fuera de `.ssh`, y borrarla más adelante). Si la clave privada ya no está en el PC, que siga dada de alta en la cuenta antigua de GitHub no afecta: nadie puede usarla desde este equipo.
+4. Clave nueva solo para GitHub, como se explica a continuación.
+
+`IdentitiesOnly yes` obliga a usar solo esa clave con GitHub, aunque `id_rsa` también exista. Comprobar con `ssh -T git@github.com` → `Hi Stek-ito!`. Para usar SSH en un repo: `git remote set-url origin git@github.com:Stek-ito/studydeck.git`.
