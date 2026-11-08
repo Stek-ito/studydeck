@@ -19,4 +19,5 @@ Las normas generales (español, modo profesor paso a paso, Roberto escribe el c�
 ## Convenciones
 - Código, tablas, rutas y commits en inglés. Documentación en español.
 - Las tablas se crean siempre con migraciones.
+- **Un commit por paso terminado** (código + su documentación), no uno por fase. Al cerrar cada paso, propón el mensaje de commit en el formato `[ETIQUETA]: ...`; Roberto lo ejecuta y hace `git push`.
 - Laravel Boost no está instalado; se valorará en la fase 6. `AGENTS.md` es el fichero que trae el esqueleto de Laravel y no se ha adaptado.
