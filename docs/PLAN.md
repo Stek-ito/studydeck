@@ -41,7 +41,7 @@ Cada fase del plan de Laravel se practica construyendo una pieza de StudyDeck, e
 | Fase | Tema | Pieza de StudyDeck | Estado |
 |---|---|---|---|
 | 0 | Diagnóstico y entorno | Proyecto creado y arrancando | [x] 2026-11-04 |
-| 1 | Routing, controladores, middleware | API de mazos y fichas en memoria | [ ] |
+| 1 | Routing, controladores, middleware | API de mazos y fichas en memoria | [x] 2026-11-10 |
 | 2 | Eloquent ORM | Modelo de datos y seeders | [ ] |
 | 3 | Blade, validación, auth | Pantalla de estudio, subida de PDFs, login | [ ] |
 | 4 | Artisan, Events, Jobs/Queues | Generación de fichas con Claude en background | [ ] |
@@ -70,6 +70,16 @@ Guía detallada de la fase: [fase-0-entorno.md](fase-0-entorno.md). Problemas en
 - Route Model Binding (≈ ParamConverter sin configurar).
 
 **Práctica:** `DeckController` y `CardController` que devuelven JSON a partir de un array en memoria. Un middleware sencillo que mida el tiempo de respuesta.
+
+1. [x] Teoría del routing: `routes/`, anatomía de una ruta, grupos `web` (sesión, CSRF) y `api` (sin estado, prefijo `/api`).
+2. [x] `routes/api.php` creado a mano y registrado en `bootstrap/app.php`.
+3. [x] `DeckController` con `index` y `show`.
+4. [x] Restricciones de ruta (`where`) y 404 con `abort()`: un único formato de error `{"message"}`.
+5. [x] Recurso anidado `/api/decks/{deck}/cards` con `CardController` y rutas agrupadas con `prefix`.
+6. [x] Middleware `MeasureResponseTime` (cabecera `X-Response-Time`) en el grupo `api`.
+7. [x] Repositorio en GitHub (`Stek-ito/studydeck`, por SSH) y un commit por paso desde ahora.
+
+Guía detallada de la fase: [fase-1-routing.md](fase-1-routing.md). Problema de GitHub con dos cuentas: [troubleshooting.md](troubleshooting.md), apartado 8.
 
 ## Fase 2 — Eloquent ORM (la más difícil)
 Doctrine es Data Mapper, Eloquent es Active Record: el objeto se guarda a sí mismo (`$deck->save()`), no hay `EntityManager`.

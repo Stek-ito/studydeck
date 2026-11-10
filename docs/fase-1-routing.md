@@ -11,8 +11,8 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md).
 3. [x] Primer controlador: `DeckController` con `index` y `show`
 4. [x] Parámetros de ruta, restricciones y errores 404
 5. [x] Recurso anidado: `CardController` (`/api/decks/{deck}/cards`)
-6. [ ] Middleware propio: `MeasureResponseTime`
-7. [ ] Commit
+6. [x] Middleware propio: `MeasureResponseTime`
+7. [x] Commit y cierre de la fase (a partir de aquí, un commit por paso)
 
 ---
 
@@ -359,5 +359,89 @@ Route::prefix('decks/{deck}/cards')
 - Los parámetros llegan al método **por nombre** (`{deck}` → `$deck`, `{card}` → `$card`).
 - Se usa `{deck}` y no `{id}`: con dos parámetros `{id}` sería ambiguo, y en la fase 2 el nombre es el que activa el Route Model Binding.
 - Escribir las dos rutas sueltas, cada una con su `where`, también funciona; el grupo evita repetir el prefijo y las restricciones.
+
+---
+
+## Paso 6: Middleware propio, `MeasureResponseTime`
+
+Objetivo: añadir a cada respuesta de la API la cabecera `X-Response-Time: 3.42ms`.
+
+### 6.1. El modelo de cebolla
+
+```
+petición ──►  [ MeasureResponseTime ]  ──►  [ otros middleware ]  ──►  Controlador
+              1. apunta la hora                                           │
+respuesta ◄── 3. añade la cabecera  ◄─────────────────────────────────────┘
+                        ▲
+                        └─ 2. $next($request) "espera" aquí hasta que vuelve la respuesta
+```
+
+`$next($request)` pasa la petición a la siguiente capa y **devuelve la respuesta** cuando el controlador termina. Lo que va encima de esa línea se ejecuta a la ida; lo que va debajo, a la vuelta. Si no se llama a `$next`, la petición se corta ahí (así funciona `auth`).
+
+El boilerplate de `make:middleware` ya es un middleware válido que no hace nada:
+```php
+return $next($request);   // pasa la petición y devuelve la respuesta tal cual
+```
+Para hacer algo "después", hay que **guardar** la respuesta en una variable en vez de devolverla directamente.
+
+### 6.2. De la idea al código, línea a línea
+
+| Idea | Código |
+|---|---|
+| 1. Apuntar el instante inicial | `$start = hrtime(true);` (nanosegundos, reloj monotónico) |
+| 2. Dejar pasar la petición y quedarse con la respuesta | `$response = $next($request);` |
+| 3. Calcular los milisegundos | `$ms = (hrtime(true) - $start) / 1_000_000;` (1 ms = 1.000.000 ns) |
+| 4. Añadir la cabecera con 2 decimales | `$response->headers->set('X-Response-Time', number_format($ms, 2) . 'ms');` |
+| 5. Devolver la respuesta | `return $response;` |
+
+```php
+public function handle(Request $request, Closure $next): Response
+{
+    $start = hrtime(true);
+
+    $response = $next($request);
+
+    $ms = (hrtime(true) - $start) / 1_000_000;
+    $response->headers->set('X-Response-Time', number_format($ms, 2) . 'ms');
+
+    return $response;
+}
+```
+
+- `$start` es una **variable local**: sigue viva entre la ida y la vuelta porque todo ocurre dentro de la misma llamada a `handle()`. En Symfony harían falta dos listeners (`kernel.request` y `kernel.response`) y guardar la hora en `$request->attributes`.
+- `hrtime(true)` y no `microtime(true)`: `hrtime` no se ve afectado si cambia la hora del sistema (NTP, cambio de horario). Para medir duraciones, siempre un reloj monotónico.
+- `1_000_000`: el `_` es un separador de miles válido en PHP desde la 7.4; solo mejora la lectura.
+- `->headers->set()` es la API de Symfony: la `Response` de Laravel **extiende** `Symfony\Component\HttpFoundation\Response` (por eso el `use` del boilerplate es de Symfony).
+
+### 6.3. Registro solo en el grupo `api`
+```php
+// bootstrap/app.php
+use App\Http\Middleware\MeasureResponseTime;
+
+->withMiddleware(function (Middleware $middleware): void {
+    $middleware->api(append: [
+        MeasureResponseTime::class,
+    ]);
+})
+```
+
+| Opción | Código | Efecto |
+|---|---|---|
+| Global | `$middleware->append(...)` | Todas las peticiones |
+| Por grupo | `$middleware->api(append: [...])` / `web(append: [...])` | Solo ese grupo |
+| Por ruta | `->middleware(MeasureResponseTime::class)` en la ruta | Solo esa ruta |
+
+### 6.4. Comprobaciones y lo que enseñan
+
+| Petición | Código | `X-Response-Time` | Por qué |
+|---|---|---|---|
+| `/api/decks` | 200 | ✅ `1.40ms` | Pasa por el middleware a la ida y a la vuelta |
+| `/api/decks/99` | 404 | ✅ `8.78ms` | El `abort()` lanza una excepción, pero **el router la captura** dentro de la cadena de middleware de la ruta y la convierte en respuesta 404 antes de devolverla. Tu middleware recibe una respuesta normal y ejecuta el "después". Tarda más porque renderizar la excepción (con la traza, en debug) cuesta |
+| `/api/decks/abc` | 404 | ❌ No aparece | **Ninguna ruta coincide**, así que el grupo `api` y sus middleware nunca se ejecutan. Los middleware de grupo o de ruta solo corren cuando el router ya ha encontrado la ruta |
+| `/` (web) | 200 | ❌ No aparece | Es del grupo `web` |
+
+**Conclusión:** un middleware de grupo **no ve** los 404 de "ruta no encontrada". Si se quisiera medir *todas* las peticiones, incluidas las que no coinciden con ninguna ruta, habría que registrarlo como **global** (`$middleware->append(...)`), que se ejecuta antes del router.
+
+En Symfony pasa lo mismo con otra forma: un listener de `kernel.exception` convierte la excepción en respuesta, y después se dispara `kernel.response` igualmente, así que el listener de respuesta también ve los 404.
 
 **`APP_DEBUG`:** con `true` (desarrollo), el JSON de error trae además `exception`, `file`, `line` y `trace`. Con `false` (producción) solo trae `message`; y en los 500, solo `"Server Error"`, para no filtrar detalles internos.
