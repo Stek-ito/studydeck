@@ -86,6 +86,8 @@ Doctrine es Data Mapper, Eloquent es Active Record: el objeto se guarda a sí mi
 - Migrations, `$fillable`, casts, relaciones, query scopes, factories y seeders.
 - Eager loading con `with()` desde el principio para evitar el N+1.
 
+Guía detallada y pasos de la fase: [fase-2-eloquent.md](fase-2-eloquent.md).
+
 **Práctica:** las tablas de StudyDeck:
 - `documents`: PDF subido, `sha256`, estado (`pending`/`processing`/`done`/`failed`), páginas y tokens gastados.
 - `decks` y `cards`: término, definición, `is_key`, página de origen. Relaciones `User hasMany Deck`, `Deck hasMany Card`, `Document hasOne Deck`.
