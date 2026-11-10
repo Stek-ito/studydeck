@@ -11,7 +11,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 3. [x] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
 4. [x] Tinker: crear y consultar datos desde la consola
 5. [x] Factories y seeders: cargar los datos de ejemplo
-6. [ ] Controladores con Eloquent y Route Model Binding
+6. [x] Controladores con Eloquent y Route Model Binding
 7. [ ] Eager loading y el problema N+1
 8. [ ] Tablas `documents` y `card_reviews`, y el scope `dueToday()`
 
@@ -368,3 +368,67 @@ Se lee como una frase: "crea 3 mazos para `$user`, cada uno con 10 fichas". Los 
 | `Deck::count()` | 3, todos con `user_id = 1` |
 | `Card::count()` | 30 (10 por mazo, `Deck::withCount('cards')`) |
 | Fichas con `is_key = true` | 4 de 30 (cerca del 20 %) |
+
+---
+
+## Paso 6: Controladores con Eloquent y Route Model Binding
+
+**Objetivo:** quitar los arrays de los controladores y leer de MySQL. Laravel busca el modelo a partir de la URL y devuelve el 404 él solo.
+
+**En Symfony:** `EntityValueResolver` (antes `ParamConverter`), con `public function show(Deck $deck)`.
+
+### 6.1. Tres reglas
+
+1. **El parámetro de la ruta y la variable deben llamarse igual:** `{deck}` ↔ `Deck $deck`. Si la ruta dice `{id}`, Laravel inyecta un `Deck` **vacío**, sin error.
+2. **Devolver un modelo o una colección ya produce JSON** (`toJson()` automático).
+3. **Rutas anidadas: `->scopeBindings()`.** Sin él, `{card}` se busca en toda la tabla y `/decks/1/cards/25` devolvería una ficha del mazo 3 (IDOR). Con él, Laravel busca a través de la relación: `$deck->cards()->findOrFail(25)`.
+
+### 6.2. Código
+
+```php
+// routes/api.php
+Route::get('/decks', [DeckController::class, 'index'])->name('decks.index');
+Route::get('/decks/{deck}', [DeckController::class, 'show'])->name('decks.show')->whereNumber('deck');
+
+Route::prefix('decks/{deck}/cards')
+    ->whereNumber(['deck', 'card'])
+    ->scopeBindings()
+    ->group(function () {
+        Route::get('/', [CardController::class, 'index'])->name('cards.index');
+        Route::get('/{card}', [CardController::class, 'show'])->name('cards.show');
+    });
+
+// DeckController
+public function index(): Collection { return Deck::all(); }
+public function show(Deck $deck): Deck { return $deck; }
+
+// CardController
+public function index(Deck $deck): Collection { return $deck->cards; }
+public function show(Deck $deck, Card $card): Card { return $card; }   // $deck hace falta para scopeBindings()
+```
+
+`Collection` es `Illuminate\Database\Eloquent\Collection`. `Illuminate\Support\Collection` también funciona, porque es la clase padre.
+
+### 6.3. Errores corregidos en la revisión
+
+- **`use Ramsey\Collection\Collection`**, elegido por el autocompletado del IDE. Provocaba un 500 (`TypeError: Return value must be of type Ramsey\Collection\Collection`). Cuando hay varias clases con el mismo nombre, hay que **mirar el namespace**.
+- **`return $deck->cards->find($card->id)`** en `show()`. Sobra, porque `scopeBindings()` ya ha comprobado la pertenencia. Además, `$deck->cards` (propiedad) carga **todas** las fichas del mazo para usar una, y `find()` puede devolver `null`, lo que daría un `TypeError`. Basta con `return $card;`.
+- **`$deck->cards`** es una colección ya cargada en PHP. **`$deck->cards()`** es un query builder que va a SQL.
+
+### 6.4. Por qué el 404 de Route Model Binding no lleva `X-Response-Time`
+
+Orden en el grupo `api`: `SubstituteBindings` → `MeasureResponseTime` (añadido con `append`) → controlador.
+
+- **`abort(404)` en el controlador (fase 1):** el 404 nace **dentro** del middleware, que lo ve y le pone la cabecera.
+- **El modelo no existe (ahora):** `SubstituteBindings` lanza la excepción **antes** de llamar a `$next()`. La petición nunca llega a `MeasureResponseTime`, que no se ejecuta.
+
+**Regla:** un middleware solo ve las respuestas generadas en capas **más interiores** que él. Para medirlo todo, habría que registrarlo como middleware global (`$middleware->append(...)`).
+
+### 6.5. Resultado
+
+| Petición | Código |
+|---|---|
+| `decks`, `decks/1`, `decks/1/cards`, `decks/1/cards/5` | 200 |
+| `decks/1/cards/25` (ficha del mazo 3) | 404, gracias a `scopeBindings()` |
+| `decks/99` | 404 `No query results for model [App\Models\Deck] 99` |
+| `decks/abc` | 404, por la restricción `whereNumber` |

@@ -2,37 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Deck;
+use Illuminate\Database\Eloquent\Collection;
+
 class DeckController extends Controller
 {
-    private const DECKS = [
-        1 => [
-            'id' => 1,
-            'name' => 'PHP',
-            'description' => 'This is the first deck.',
-        ],
-        2 => [
-            'id' => 2,
-            'name' => 'Symfony',
-            'description' => 'This is the second deck.',
-        ],
-        3 => [
-            'id' => 3,
-            'name' => 'Laravel',
-            'description' => 'This is the third deck.',
-        ],
-    ];
-
-    public function index()
+    public function index(): Collection
     {
-        return array_values(self::DECKS);
+        return Deck::all();
     }
 
-    public function show(int $id)
+    public function show(Deck $deck): Deck
     {
-        if (! array_key_exists($id, self::DECKS)) {
-            abort(404, 'Deck not found');
-        }
-
-        return self::DECKS[$id];
+        return $deck;
     }
 }
