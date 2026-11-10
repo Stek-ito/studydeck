@@ -10,7 +10,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 2. [x] Migraciones de `decks` y `cards`, con clave foránea
 3. [x] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
 4. [x] Tinker: crear y consultar datos desde la consola
-5. [ ] Factories y seeders: cargar los datos de ejemplo
+5. [x] Factories y seeders: cargar los datos de ejemplo
 6. [ ] Controladores con Eloquent y Route Model Binding
 7. [ ] Eager loading y el problema N+1
 8. [ ] Tablas `documents` y `card_reviews`, y el scope `dueToday()`
@@ -284,3 +284,87 @@ La protección funciona, pero el descarte silencioso puede despistar. En desarro
 $deck->delete();
 Card::count();   // 0: MySQL borra las fichas por el cascadeOnDelete() de la FK
 ```
+
+---
+
+## Paso 5: Factories y seeders
+
+**Objetivo:** llenar la base de datos con datos de prueba con un solo comando, y poder borrarlos y regenerarlos cuando haga falta.
+
+### 5.1. Dos piezas con funciones distintas
+
+| Pieza | Qué hace | Symfony |
+|---|---|---|
+| **Factory** | Sabe **cómo fabricar** un modelo con datos falsos (Faker). No decide cuántos ni cuáles | `zenstruck/foundry` |
+| **Seeder** | **Decide qué datos** se cargan, usando las factories | Clase `Fixture` de DoctrineFixturesBundle |
+| `php artisan db:seed` | Ejecuta `DatabaseSeeder` | `doctrine:fixtures:load` |
+| `php artisan migrate:fresh --seed` | Borra **todas** las tablas, migra desde cero y siembra | `schema:drop` + `migrate` + `fixtures:load` |
+
+⚠️ `migrate:fresh` borra todo. Solo se usa en local, **nunca en producción**.
+
+### 5.2. Conectar modelo y factory: `HasFactory`
+
+```bash
+php artisan make:factory DeckFactory
+php artisan make:factory CardFactory
+```
+
+Cada modelo necesita `use HasFactory;` dentro de la clase. Ese trait añade `Deck::factory()` y, por convención de nombres, encuentra `Database\Factories\DeckFactory`.
+
+### 5.3. Las factories
+
+```php
+// DeckFactory
+public function definition(): array
+{
+    return [
+        'user_id' => User::factory(),            // crea un usuario si nadie indica otro
+        'name' => fake()->words(2, true),        // true: texto, no array
+        'description' => fake()->sentence(),
+    ];
+}
+
+// CardFactory
+public function definition(): array
+{
+    return [
+        'deck_id' => Deck::factory(),
+        'term' => fake()->sentence(4),
+        'definition' => fake()->paragraph(),
+        'is_key' => fake()->boolean(20),         // true el 20 % de las veces
+        'source_page' => fake()->numberBetween(1, 300),
+    ];
+}
+```
+
+- **La clave foránea sí puede aparecer en una factory.** Las factories no pasan por `#[Fillable]`, porque son código nuestro y no datos que llegan de un usuario.
+- **`User::factory()` como valor** es un valor "por defecto perezoso": solo se crea ese usuario si no se indica otro con `->for($user)`.
+
+### 5.4. El seeder
+
+```php
+public function run(): void
+{
+    $user = User::factory()->create([
+        'name' => 'Roberto',
+        'email' => 'roberto@studydeck.test',   // contraseña: "password" (la pone UserFactory)
+    ]);
+
+    Deck::factory()
+        ->count(3)
+        ->for($user)                             // user_id, a través de la relación user()
+        ->has(Card::factory()->count(10))        // deck_id, a través de la relación cards()
+        ->create();
+}
+```
+
+Se lee como una frase: "crea 3 mazos para `$user`, cada uno con 10 fichas". Los valores que se pasan a `create([...])` sustituyen a los de `definition()`.
+
+### 5.5. Resultado
+
+| Comprobación | Resultado |
+|---|---|
+| `User::count()` | 1 |
+| `Deck::count()` | 3, todos con `user_id = 1` |
+| `Card::count()` | 30 (10 por mazo, `Deck::withCount('cards')`) |
+| Fichas con `is_key = true` | 4 de 30 (cerca del 20 %) |
