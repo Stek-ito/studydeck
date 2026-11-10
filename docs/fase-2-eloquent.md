@@ -7,7 +7,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 ## Pasos
 
 1. [x] Teoría: Active Record (Eloquent) frente a Data Mapper (Doctrine) y las convenciones de Eloquent
-2. [ ] Migraciones de `decks` y `cards`, con clave foránea
+2. [x] Migraciones de `decks` y `cards`, con clave foránea
 3. [ ] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
 4. [ ] Tinker: crear y consultar datos desde la consola
 5. [ ] Factories y seeders: cargar los datos de ejemplo
@@ -66,3 +66,79 @@ No consulta la estructura de la tabla: hace `SELECT * FROM users ...` y **rellen
 - La FK es `decks.document_id`: la columna está **en la tabla `decks`** y apunta a `documents.id`. `decks.document_id` ya se lee como "tabla.columna".
 - En uno a uno, la FK va en el lado que **depende** del otro: el mazo sale del documento, no al revés.
 - En los modelos: el lado **sin** FK usa `hasOne` (`Document hasOne Deck`) y el lado **con** FK usa `belongsTo` (`Deck belongsTo Document`). Truco: `belongsTo` siempre va en el modelo cuya tabla tiene la columna `_id`.
+
+---
+
+## Paso 2: Migraciones de `decks` y `cards`
+
+| | Doctrine | Laravel |
+|---|---|---|
+| Cómo nace | `make:migration` compara entidades y BD y genera SQL | La escribes tú con el `Blueprint` (`$table->string(...)`) |
+| Ejecutar / estado / deshacer | `doctrine:migrations:migrate` / `status` / `migrate prev` | `php artisan migrate` / `migrate:status` / `migrate:rollback` |
+| Ver una tabla | `doctrine:schema:validate` (no equivalente exacto) | `php artisan db:table cards` |
+
+```bash
+php artisan make:model Deck -m    # modelo + migración (en este orden: decks antes que cards)
+php artisan make:model Card -m
+```
+Las migraciones se ejecutan por el **timestamp** del nombre del fichero; `cards` tiene FK hacia `decks`, así que `decks` debe ir antes.
+
+### 2.1. Código
+```php
+// create_decks_table
+Schema::create('decks', function (Blueprint $table) {
+    $table->id();
+    $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+    $table->string('name');
+    $table->text('description')->nullable();
+    $table->timestamps();
+});
+
+// create_cards_table
+Schema::create('cards', function (Blueprint $table) {
+    $table->id();
+    $table->foreignId('deck_id')->constrained()->cascadeOnDelete();
+    $table->string('term');
+    $table->text('definition');
+    $table->boolean('is_key')->default(false);
+    $table->unsignedSmallInteger('source_page')->nullable();
+    $table->timestamps();
+});
+```
+
+| Método | SQL |
+|---|---|
+| `id()` | `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY` |
+| `foreignId('deck_id')->constrained()->cascadeOnDelete()` | `BIGINT UNSIGNED` + FK a `decks.id` (tabla deducida del nombre) + `ON DELETE CASCADE` |
+| `string()` | `VARCHAR(255)` |
+| `text()` | `TEXT` (~64 KB) |
+| `boolean()->default(false)` | `TINYINT(1) DEFAULT 0` |
+| `unsignedSmallInteger()` | `SMALLINT UNSIGNED` (0–65.535, 2 bytes) |
+| `->nullable()` | `NULL` (sin él, la columna es `NOT NULL`) |
+| `timestamps()` | `created_at` y `updated_at` |
+
+`decks.document_id` se añade en el paso 8: una FK no puede apuntar a una tabla que aún no existe.
+
+### 2.2. Errores corregidos en la revisión: elegir el tipo de columna
+
+**El tipo de la columna es la primera validación**: el más estricto que encaje con el dato.
+- `definition` como `string()->nullable()` → `text()`. Una definición supera fácilmente 255 caracteres (*Data too long*), y una ficha sin definición no tiene sentido: que la BD lo exija.
+- `source_page` como `string()` → `unsignedSmallInteger()`. Como texto ordena mal (`"1", "10", "2"`), admite basura (`"abc"`) y ocupa más.
+- `is_key_term` → `is_key`: el nombre era válido, pero hay que usar **el mismo nombre en todo el proyecto** (plan, esquema de Claude, modelos).
+
+### 2.3. Editar una migración ya ejecutada
+
+Laravel **no vuelve a ejecutar** una migración que figura como `Ran`, aunque cambies el fichero. Para aplicar el cambio en local:
+```bash
+php artisan migrate:rollback     # deshace el último batch (down() en orden inverso: cards y luego decks)
+php artisan migrate:status       # las dos vuelven a "Pending"
+php artisan migrate
+php artisan db:table cards       # comprobar tipos, índice y FK
+```
+- **Batch:** el grupo de migraciones ejecutadas en un mismo `migrate`. `rollback` deshace el último batch entero; `--step=1` deshace solo la última migración.
+- ⚠️ **Solo vale mientras la migración no ha salido de tu máquina.** Si ya está publicada (otro desarrollador, producción), allí figura como `Ran` y tu cambio nunca se aplicaría: se crea una **migración nueva** que modifica la tabla (`->change()`, `renameColumn()`). Igual que en Doctrine.
+
+### 2.4. Resultado (`php artisan db:table cards`)
+- Motor `InnoDB`, collation `utf8mb4_unicode_ci`.
+- `definition text` (sin nullable), `is_key tinyint(1)` con 0 por defecto, `source_page smallint unsigned nullable`.
+- Índice `cards_deck_id_foreign` y FK `deck_id references id on decks`, `on delete cascade`.
