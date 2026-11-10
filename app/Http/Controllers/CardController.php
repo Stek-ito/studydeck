@@ -2,8 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-
 class CardController extends Controller
 {
     //
@@ -13,15 +11,15 @@ class CardController extends Controller
                 'id' => 1,
                 'deck_id' => 1,
                 'term' => 'What is PHP?',
-                'definition' => 'PHP is a popular general-purpose scripting language that is especially suited to web development.'
-                ],
+                'definition' => 'PHP is a popular general-purpose scripting language that is especially suited to web development.',
+            ],
             2 => [
                 'id' => 2,
                 'deck_id' => 1,
                 'term' => 'What is a variable in PHP?',
-                'definition' => 'A variable in PHP is a container for storing data values. It is represented by a dollar sign ($) followed by the variable name.'
+                'definition' => 'A variable in PHP is a container for storing data values. It is represented by a dollar sign ($) followed by the variable name.',
             ],
-            
+
         ],
         2 => [
             1 => [
@@ -35,10 +33,10 @@ class CardController extends Controller
                 'deck_id' => 2,
                 'term' => 'What is Symfony2?',
                 'definition' => 'Symfony is a set of reusable PHP components and a PHP framework for web projects.2',
-            ]
+            ],
         ],
         3 => [
-            1 =>[
+            1 => [
                 'id' => 1,
                 'deck_id' => 3,
                 'term' => 'What is Laravel?',
@@ -49,7 +47,7 @@ class CardController extends Controller
                 'deck_id' => 3,
                 'term' => 'What is Laravel?2',
                 'definition' => 'Laravel is a web application framework with expressive, elegant syntax.2',
-            ]
+            ],
         ],
     ];
 

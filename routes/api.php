@@ -1,7 +1,7 @@
 <?php
 
-use App\Http\Controllers\DeckController;
 use App\Http\Controllers\CardController;
+use App\Http\Controllers\DeckController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/ping', function () {
@@ -12,7 +12,7 @@ Route::get('/ping', function () {
 Route::get('/decks', [DeckController::class, 'index'])->name('decks.index');
 Route::get('/decks/{id}', [DeckController::class, 'show'])->name('decks.show')->where('id', '[0-9]+');
 
-//Card routes
+// Card routes
 Route::prefix('decks/{deck}/cards')
     ->whereNumber(['deck', 'card'])
     ->group(function () {

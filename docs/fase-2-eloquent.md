@@ -8,7 +8,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 
 1. [x] Teoría: Active Record (Eloquent) frente a Data Mapper (Doctrine) y las convenciones de Eloquent
 2. [x] Migraciones de `decks` y `cards`, con clave foránea
-3. [ ] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
+3. [x] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
 4. [ ] Tinker: crear y consultar datos desde la consola
 5. [ ] Factories y seeders: cargar los datos de ejemplo
 6. [ ] Controladores con Eloquent y Route Model Binding
@@ -142,3 +142,93 @@ php artisan db:table cards       # comprobar tipos, índice y FK
 - Motor `InnoDB`, collation `utf8mb4_unicode_ci`.
 - `definition text` (sin nullable), `is_key tinyint(1)` con 0 por defecto, `source_page smallint unsigned nullable`.
 - Índice `cards_deck_id_foreign` y FK `deck_id references id on decks`, `on delete cascade`.
+
+---
+
+## Paso 3: Modelos `Deck` y `Card`
+
+### 3.1. Asignación masiva: `#[Fillable]`
+
+`Deck::create([...])` y `$deck->fill([...])` solo asignan los campos declarados como permitidos. Protege de `Deck::create($request->all())` con un `user_id` inyectado en la petición.
+
+- Laravel 13 lo declara con un **atributo PHP**: `#[Fillable(['name', 'description'])]` encima de la clase. La forma clásica `protected $fillable = [...]` sigue funcionando.
+- Equivalente en Symfony: un formulario solo rellena los campos añadidos con `->add(...)`.
+- **Las claves foráneas (`user_id`, `deck_id`) no van en `Fillable`**: se rellenan a través de la relación (`$user->decks()->create([...])`, `$deck->cards()->create([...])`), nunca con datos del usuario.
+
+### 3.2. Tipos PHP: `casts()`
+
+MySQL devuelve `TINYINT` como `0`/`1`. `casts()` convierte al leer y al escribir (≈ `type:` de `#[ORM\Column]`):
+```php
+protected function casts(): array
+{
+    return [
+        'is_key' => 'boolean',
+        'source_page' => 'integer',
+    ];
+}
+```
+
+### 3.3. Relaciones: dos tipos, siempre en pareja
+
+```
+users ──< decks ──< cards
+          (user_id)  (deck_id)
+```
+
+| Relación | Modelo con la columna `_id` → `belongsTo` | El otro lado → `hasMany` | Doctrine |
+|---|---|---|---|
+| Usuario ↔ mazos | `Deck::user()` | `User::decks()` | `ManyToOne` / `OneToMany` |
+| Mazo ↔ fichas | `Card::deck()` | `Deck::cards()` | `ManyToOne` / `OneToMany` |
+
+Nombre del método: **singular** si devuelve uno (`user()`, `deck()`), **plural** si devuelve muchos (`decks()`, `cards()`).
+
+```php
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+#[Fillable(['name', 'description'])]
+class Deck extends Model
+{
+    // decks tiene user_id → pertenece a un User
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);   // busca decks.user_id (nombre del método + _id)
+    }
+
+    // cards tiene deck_id → tiene muchas Card
+    public function cards(): HasMany
+    {
+        return $this->hasMany(Card::class);     // busca cards.deck_id (nombre de esta clase + _id)
+    }
+}
+
+// Card
+public function deck(): BelongsTo { return $this->belongsTo(Deck::class); }
+
+// User
+public function decks(): HasMany { return $this->hasMany(Deck::class); }
+```
+
+Uso:
+```php
+$deck->cards                                // PROPIEDAD: ejecuta la consulta, devuelve una Collection
+$deck->cards()->where('is_key', true)->get(); // MÉTODO: la relación sin ejecutar, para encadenar
+$deck->cards()->create([...]);              // crea una ficha con deck_id ya puesto
+```
+
+### 3.4. Comprobación: `php artisan model:show`
+
+```bash
+php artisan model:show Deck   # ✅ Relations: user BelongsTo User, cards HasMany Card
+php artisan model:show Card   # ✅ is_key fillable tinyint(1) / boolean; source_page ... / integer; deck BelongsTo Deck
+php artisan model:show User   # ✅ decks HasMany Deck
+```
+Muestra columnas (leídas de la tabla), qué es `fillable`, el tipo SQL / el cast PHP y las relaciones. Lo más parecido a `doctrine:mapping:info`.
+
+### 3.5. Formato del código: Laravel Pint
+
+`laravel/pint` viene en el esqueleto (≈ PHP-CS-Fixer). Formatea según el estilo de Laravel:
+```bash
+vendor\bin\pint --test    # solo dice qué ficheros formatearía
+vendor\bin\pint           # los formatea
+```

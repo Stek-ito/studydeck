@@ -23,7 +23,7 @@ class MeasureResponseTime
         // Convert time to milliseconds
         $ms = (hrtime(true) - $start) / 1_000_000;
 
-        $response->headers->set('X-Response-Time', number_format($ms, 2) . 'ms');
+        $response->headers->set('X-Response-Time', number_format($ms, 2).'ms');
 
         return $response;
     }

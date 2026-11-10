@@ -2,9 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-
-
 class DeckController extends Controller
 {
     private const DECKS = [
@@ -32,9 +29,10 @@ class DeckController extends Controller
 
     public function show(int $id)
     {
-        if (!array_key_exists($id, self::DECKS)) {
+        if (! array_key_exists($id, self::DECKS)) {
             abort(404, 'Deck not found');
         }
+
         return self::DECKS[$id];
     }
 }
