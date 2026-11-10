@@ -13,6 +13,7 @@ Formato de cada problema: **síntoma → causa → cómo diagnosticarlo → solu
 6. [Composer lanza avisos "Deprecated" con PHP nuevo](#6-composer-lanza-avisos-deprecated-con-php-nuevo)
 7. [`composer create-project` crea el proyecto en una subcarpeta](#7-composer-create-project-crea-el-proyecto-en-una-subcarpeta)
 8. [`git push`: "Permission denied to OtraCuenta" (403) con dos cuentas de GitHub](#8-git-push-permission-denied-to-otracuenta-403-con-dos-cuentas-de-github)
+9. [Tinker: `Class "Card" not found` con un modelo recién creado](#9-tinker-class-card-not-found-con-un-modelo-recién-creado)
 
 ---
 
@@ -288,3 +289,27 @@ Host github.com
 4. Clave nueva solo para GitHub, como se explica a continuación.
 
 `IdentitiesOnly yes` obliga a usar solo esa clave con GitHub, aunque `id_rsa` también exista. Comprobar con `ssh -T git@github.com` → `Hi Stek-ito!`. Para usar SSH en un repo: `git remote set-url origin git@github.com:Stek-ito/studydeck.git`.
+
+---
+
+## 9. Tinker: `Class "Card" not found` con un modelo recién creado
+
+**Síntoma:** en `php artisan tinker`, `User::first()` funciona, pero `Card::first()` (un modelo creado después de instalar el proyecto) da `Error  Class "Card" not found`. Sin embargo, `$deck->cards()` sí funciona.
+
+**Causa:** Tinker no importa los modelos "mágicamente": su *ClassAliasAutoloader* crea alias cortos (`Card` → `App\Models\Card`) **solo para las clases que aparecen en el classmap de Composer** (`vendor/composer/autoload_classmap.php`). El `composer.json` de Laravel tiene `"optimize-autoloader": true`, así que el classmap se generó al instalar el proyecto, cuando solo existía `User`. Los modelos creados después no están en el classmap, y Tinker no les crea alias.
+
+`$deck->cards()` funciona porque dentro del modelo se usa el nombre completo (`Card::class` resuelto en el namespace `App\Models`) y el autoload PSR-4 lo encuentra sin classmap. La aplicación funciona; solo falla el atajo de Tinker.
+
+**Cómo diagnosticarlo:**
+```bash
+Select-String "App\\Models" vendor\composer\autoload_classmap.php   # solo aparece User
+```
+En Tinker, con el nombre completo funciona: `App\Models\Card::first()`.
+
+**Solución:** regenerar el classmap y reiniciar Tinker.
+```bash
+composer dump-autoload
+php artisan tinker
+```
+
+**Por qué esta solución:** `dump-autoload` vuelve a escanear las clases y las añade al classmap; Tinker lee el classmap al arrancar, por eso hay que salir y volver a entrar. Alternativa sin regenerar: escribir el nombre completo (`App\Models\Card`) o `use App\Models\Card;` dentro de Tinker. Hay que repetirlo cada vez que se crea un modelo nuevo (o cualquier clase que se quiera usar con su nombre corto en Tinker).

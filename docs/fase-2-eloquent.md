@@ -9,7 +9,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 1. [x] Teoría: Active Record (Eloquent) frente a Data Mapper (Doctrine) y las convenciones de Eloquent
 2. [x] Migraciones de `decks` y `cards`, con clave foránea
 3. [x] Modelos `Deck` y `Card`: `$fillable`, casts y relaciones
-4. [ ] Tinker: crear y consultar datos desde la consola
+4. [x] Tinker: crear y consultar datos desde la consola
 5. [ ] Factories y seeders: cargar los datos de ejemplo
 6. [ ] Controladores con Eloquent y Route Model Binding
 7. [ ] Eager loading y el problema N+1
@@ -231,4 +231,56 @@ Muestra columnas (leídas de la tabla), qué es `fillable`, el tipo SQL / el cas
 ```bash
 vendor\bin\pint --test    # solo dice qué ficheros formatearía
 vendor\bin\pint           # los formatea
+```
+
+---
+
+## Paso 4: Tinker
+
+Consola interactiva (REPL) con la aplicación cargada: `php artisan tinker`. Es PsySH integrado con Laravel; en Symfony no viene de serie. Se sale con `exit`. Si un modelo recién creado da `Class "X" not found`, ver [troubleshooting.md, problema 9](troubleshooting.md) (`composer dump-autoload`).
+
+### 4.1. Crear a través de las relaciones
+```php
+$user = User::create(['name' => 'Roberto', 'email' => 'roberto@studydeck.test', 'password' => 'secret123']);
+// sin password en la salida (#[Hidden]) y guardado como hash (cast 'hashed')
+
+$deck = $user->decks()->create(['name' => 'PHP', 'description' => 'PHP basics']);   // user_id lo pone la relación
+$deck->cards()->create(['term' => 'What is PHP?', 'definition' => '...', 'is_key' => true, 'source_page' => 3]);
+```
+
+### 4.2. Leer a través de las relaciones
+```php
+$deck->cards->count();          // 2
+$deck->cards->first()->is_key;  // true (no 1): cast
+Card::first()->deck->name;      // "PHP": relación inversa
+```
+Ojo: clase en **singular** (`Card`), tabla y relación de "muchos" en plural (`cards`, `$deck->cards`).
+
+### 4.3. Dirty checking, comprobado
+```php
+DB::enableQueryLog();
+$deck->name = 'PHP 8.5';
+$deck->getDirty();          // ['name' => 'PHP 8.5']: el cambio en memoria
+$deck->save();              // UPDATE decks SET name = ..., updated_at = ... WHERE id = ...
+$deck->save();              // sin cambios → no hay consulta, devuelve true
+count(DB::getQueryLog());   // 1
+```
+`DB::enableQueryLog()` + `DB::getQueryLog()` es la forma rápida de ver qué SQL lanza Eloquent (≈ la pestaña Doctrine del profiler de Symfony).
+
+### 4.4. Fillable en acción
+```php
+Deck::create(['name' => 'Hack', 'user_id' => $user->id]);
+// SQLSTATE[HY000]: General error: 1364 Field 'user_id' doesn't have a default value
+```
+El error **no** es que el campo no exista (la columna sí existe). Pasa esto:
+1. `user_id` no está en `#[Fillable]`, así que Eloquent lo **descarta en silencio**.
+2. El `INSERT` se lanza solo con `name` (y los timestamps).
+3. MySQL lo rechaza: `user_id` es `NOT NULL` y no tiene valor por defecto.
+
+La protección funciona, pero el descarte silencioso puede despistar. En desarrollo se puede hacer que lance una excepción clara (`MassAssignmentException`) con `Model::preventSilentlyDiscardingAttributes(! app()->isProduction());` en `AppServiceProvider::boot()` (se verá junto a `Model::shouldBeStrict()` en el paso 7).
+
+### 4.5. Borrado en cascada
+```php
+$deck->delete();
+Card::count();   // 0: MySQL borra las fichas por el cascadeOnDelete() de la FK
 ```
