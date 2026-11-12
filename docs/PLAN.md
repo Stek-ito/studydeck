@@ -98,13 +98,21 @@ Guía detallada y pasos de la fase: [fase-2-eloquent.md](fase-2-eloquent.md).
 ## Fase 3 — Blade, validación, auth
 - Blade: layouts y componentes (≈ `{% extends %}`/`{% block %}`).
 - Form Requests (`make:request`) para la validación.
-- Auth con Breeze; Gates y Policies (≈ Voters).
+- Auth en **dos caminos** (decidido el 2026-11-12):
+  1. **A mano, en StudyDeck:** guards, `Auth::attempt`, sesión, rate limiting, verificación de email, recuperación de contraseña y 2FA (TOTP).
+  2. **Starter kit oficial (Livewire + Fortify) en un proyecto aparte** (`C:\Roberto\StarterKitLab`), solo para leerlo y compararlo con lo hecho a mano.
+  Breeze no se usa: desde Laravel 12 lo sustituyen los starter kits y ya no recibe actualizaciones.
+- Gates y Policies (≈ Voters).
+
+Guía detallada y pasos de la fase: [fase-3-blade-auth.md](fase-3-blade-auth.md).
 
 **Práctica:**
+- Registro, login y logout propios, con rate limiting, verificación de email, recuperación de contraseña y 2FA.
 - Pantalla de estudio: girar la ficha, "Lo sé" / "Repasar", filtro "Hoy".
 - La lógica de Leitner en un servicio propio (`LeitnerScheduler`) con intervalos 1, 3, 7, 15, 30 y 60 días.
 - Formulario de subida con `StoreDocumentRequest` (`mimes:pdf`, tamaño y páginas máximas).
 - `DeckPolicy`: cada usuario solo ve y edita sus mazos.
+- Comparación "mi código ↔ kit" documentada.
 
 ## Fase 4 — Artisan, Events, Jobs/Queues
 - Commands ≈ Symfony Console; Events & Listeners ≈ EventDispatcher; Queues ≈ Messenger.
