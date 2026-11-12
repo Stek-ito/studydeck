@@ -486,3 +486,56 @@ return Deck::withCount('cards')->get();   // cada mazo trae "cards_count": 10
 ```
 
 `all()` no admite nada delante: en cuanto se añade `with` o `withCount`, se termina con `get()`.
+
+### 7.5. Repaso: contar las consultas
+
+| Código (50 mazos) | Consultas |
+|---|---|
+| `Deck::all()` + `$deck->user->name` en el bucle | 51 (1 + N) |
+| `Deck::with('user')->get()` + `$deck->user->name` | 2 |
+| `Deck::with('cards')->get()` + `$deck->cards->count()` | 2: el `count()` de la **propiedad** se hace en PHP |
+| `$deck->cards()->count()` en el bucle | 1 + N. `shouldBeStrict()` **no** lo detecta: no es lazy loading, sino una consulta explícita |
+| `Deck::withCount('cards')->get()` | 1 |
+
+Eloquent no reutiliza un modelo entre instancias distintas: aunque los 50 mazos sean del mismo usuario, el lazy loading hace 50 consultas.
+
+---
+
+## Paso 8A: Migraciones de `documents`, `card_reviews` y `decks.document_id`
+
+### 8A.1. Teoría
+
+- **Alterar una tabla existente:** una migración nueva con `Schema::table(...)` (`ALTER TABLE`). Nunca se edita una migración publicada. Si el nombre es `add_x_to_decks_table`, Laravel genera el fichero ya con `Schema::table('decks', ...)`.
+- **Dentro de `Schema::table` cada línea añade una columna.** `$table->id()` ahí intenta crear un segundo `id` → `Duplicate column name 'id'`. `id()` solo va en `Schema::create`.
+- **Qué pasa con los hijos al borrar el padre:**
+
+| Método | Al borrar el padre | Uso |
+|---|---|---|
+| `cascadeOnDelete()` | borra los hijos | `cards.deck_id`, `card_reviews.card_id` |
+| `nullOnDelete()` | pone la FK a `NULL` (requiere `nullable()`) | `decks.document_id` |
+| *(nada)* | MySQL impide el borrado | — |
+
+- **`unique` como regla de negocio:** `unique(['user_id', 'sha256'])` hace que MySQL rechace el mismo PDF subido dos veces por el mismo usuario, aunque falle el código PHP.
+- **`down()` deshace exactamente `up()`:** `dropConstrainedForeignId('document_id')` quita la restricción y la columna.
+- **Orden de los modificadores:** `nullable()`, `after()` y `unique()` van **antes** de `constrained()`, porque `constrained()` cambia de objeto (pasa a la definición de la FK).
+- **Orden de las migraciones:** por la fecha del nombre. `documents` debe existir antes de que `decks.document_id` apunte a ella.
+
+### 8A.2. Elección de tipos
+
+| Columna | Tipo | Por qué |
+|---|---|---|
+| `documents.sha256` | `char(64)` | un SHA-256 en hexadecimal mide siempre 64 caracteres |
+| `documents.status` | `string`, default `pending` | un `enum` de MySQL obliga a hacer un `ALTER` para añadir estados. Los valores los controlará un enum de PHP con cast (fase 4) |
+| `documents.pages` | `unsignedSmallInteger` nullable | no se conoce hasta procesar el PDF |
+| `card_reviews.due_at` | `date` + `index()` | Leitner repasa "por días". Lo filtra `dueToday()` en cada carga |
+| `card_reviews.last_reviewed_at` | `timestamp` nullable | ❌ era `time`, que guarda solo la hora y no el día. Los `*_at` son casi siempre `timestamp` |
+| `card_reviews.card_id` | FK + `unique()` | una ficha, un registro de repaso |
+
+`date` = `2026-11-12`, `time` = `10:42:00`, `timestamp` = `2026-11-12 10:42:00`.
+
+### 8A.3. Resultado
+
+- `decks`: `id, user_id, document_id, name, ...`. FKs: `user_id` → cascade, `document_id` → set null.
+- `card_reviews`: índice unique en `card_id`, índice normal en `due_at`.
+- `documents`: índice unique en `(user_id, sha256)` y **ningún índice aparte para `user_id`**. MySQL reutiliza el índice compuesto para la FK porque `user_id` es su primera columna.
+- `migrate:rollback` + `migrate` sin errores: los `down()` funcionan.
