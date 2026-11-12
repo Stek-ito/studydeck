@@ -12,7 +12,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 4. [x] Tinker: crear y consultar datos desde la consola
 5. [x] Factories y seeders: cargar los datos de ejemplo
 6. [x] Controladores con Eloquent y Route Model Binding
-7. [ ] Eager loading y el problema N+1
+7. [x] Eager loading y el problema N+1
 8. [ ] Tablas `documents` y `card_reviews`, y el scope `dueToday()`
 
 ---
@@ -432,3 +432,57 @@ Orden en el grupo `api`: `SubstituteBindings` → `MeasureResponseTime` (añadid
 | `decks/1/cards/25` (ficha del mazo 3) | 404, gracias a `scopeBindings()` |
 | `decks/99` | 404 `No query results for model [App\Models\Deck] 99` |
 | `decks/abc` | 404, por la restricción `whereNumber` |
+
+---
+
+## Paso 7: Eager loading y el problema N+1
+
+### 7.1. Teoría
+
+- **Lazy loading:** una relación se consulta la **primera vez que se accede** a ella. En un bucle, eso da 1 consulta por la lista + 1 por cada elemento: **N+1**.
+- **Eager loading:** se pide la relación por adelantado y Eloquent hace **2 consultas**, la segunda con `WHERE id IN (...)`, sea cual sea N.
+
+| Herramienta | Qué hace | Doctrine |
+|---|---|---|
+| `Card::with('deck')->get()` | carga la relación al consultar | `JOIN FETCH` / `addSelect` |
+| `$cards->load('deck')` | la carga en una colección que ya tienes | — |
+| `Deck::withCount('cards')->get()` | añade `cards_count` (subconsulta `COUNT`), sin cargar las fichas | `SIZE(d.cards)` |
+| `Model::preventLazyLoading()` | excepción si hay lazy loading | solo se detecta con el profiler |
+
+### 7.2. Medido en Tinker
+
+```php
+DB::enableQueryLog();
+foreach (Card::all() as $card) { $card->deck->name; }
+count(DB::getQueryLog());   // 31 = 1 + 30
+
+DB::flushQueryLog();
+foreach (Card::with('deck')->get() as $card) { $card->deck->name; }
+count(DB::getQueryLog());   // 2
+```
+
+### 7.3. Modo estricto en `AppServiceProvider::boot()`
+
+```php
+use Illuminate\Database\Eloquent\Model;
+
+Model::shouldBeStrict(! $this->app->isProduction());
+```
+
+| Activa | Detecta |
+|---|---|
+| `preventLazyLoading` | N+1 → `LazyLoadingViolationException` |
+| `preventSilentlyDiscardingAttributes` | atributos no fillable que se descartarían en silencio (paso 4.4) |
+| `preventAccessingMissingAttributes` | leer una columna que no se ha traído de la base de datos |
+
+- **Nunca en producción:** allí es mejor una página lenta que un 500.
+- **Matiz de entrevista:** la protección solo actúa en modelos que vienen de una colección con **más de un** elemento. `Card::first()->deck` no falla, porque con un solo modelo no hay N+1. Por eso `CardController::index` (`$deck->cards` sobre un único `$deck`) sigue funcionando.
+
+### 7.4. En la API
+
+```php
+// DeckController::index
+return Deck::withCount('cards')->get();   // cada mazo trae "cards_count": 10
+```
+
+`all()` no admite nada delante: en cuanto se añade `with` o `withCount`, se termina con `get()`.

@@ -9,7 +9,7 @@ class DeckController extends Controller
 {
     public function index(): Collection
     {
-        return Deck::all();
+        return Deck::withCount('cards')->get();
     }
 
     public function show(Deck $deck): Deck
