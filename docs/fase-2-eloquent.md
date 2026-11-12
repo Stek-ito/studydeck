@@ -13,7 +13,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 5. [x] Factories y seeders: cargar los datos de ejemplo
 6. [x] Controladores con Eloquent y Route Model Binding
 7. [x] Eager loading y el problema N+1
-8. [ ] Tablas `documents` y `card_reviews`, y el scope `dueToday()`
+8. [x] Tablas `documents` y `card_reviews`, y el scope `dueToday()`
 
 ---
 
@@ -539,3 +539,98 @@ Eloquent no reutiliza un modelo entre instancias distintas: aunque los 50 mazos 
 - `card_reviews`: índice unique en `card_id`, índice normal en `due_at`.
 - `documents`: índice unique en `(user_id, sha256)` y **ningún índice aparte para `user_id`**. MySQL reutiliza el índice compuesto para la FK porque `user_id` es su primera columna.
 - `migrate:rollback` + `migrate` sin errores: los `down()` funcionan.
+
+---
+
+## Paso 8B: Modelos `Document` y `CardReview`, relaciones y el scope `dueToday()`
+
+### 8B.1. `hasOne` frente a `hasMany`
+
+Misma regla que en el paso 3: `belongsTo` va en el modelo cuya tabla tiene el `_id`. El otro lado es `hasMany` (varios) o `hasOne` (uno).
+
+| Columna FK | `belongsTo` | Lado contrario |
+|---|---|---|
+| `documents.user_id` | `Document::user()` | `User::documents()`, `hasMany` |
+| `decks.document_id` | `Deck::document()` | `Document::deck()`, `hasOne` |
+| `card_reviews.card_id` | `CardReview::card()` | `Card::review()`, `hasOne` (lo garantiza el `unique()`) |
+
+- El método se llama `review()` y no `cardReview()` porque se lee mejor (`$card->review->box`). La FK `card_id` se deduce del nombre del **modelo** `Card`, no del método.
+- Doctrine: `#[OneToOne]` / `#[OneToMany]` / `#[ManyToOne]`, con `mappedBy` e `inversedBy`. En Eloquent cada lado es solo un método.
+
+```php
+#[Fillable(['box', 'due_at', 'last_reviewed_at', 'own_explanation', 'doubt'])]
+class CardReview extends Model
+{
+    public function card(): BelongsTo { return $this->belongsTo(Card::class); }
+
+    protected function casts(): array
+    {
+        return ['box' => 'integer', 'due_at' => 'date', 'last_reviewed_at' => 'datetime'];
+    }
+}
+```
+
+Los casts `date` y `datetime` devuelven objetos **Carbon**: `$review->due_at->diffForHumans()` → `3 days ago`.
+
+### 8B.2. Query scopes: una consulta con nombre
+
+Se construye en tres pasos.
+
+**1. La consulta "a mano":**
+```php
+Card::whereHas('review', function ($q) {
+    $q->whereDate('due_at', '<=', today());
+})->get();
+```
+`whereHas('review', ...)` significa "fichas que **tienen** un review que cumple…", y genera `WHERE EXISTS (SELECT * FROM card_reviews WHERE card_reviews.card_id = cards.id AND ...)`.
+
+**2. Se convierte en scope cambiando tres cosas:** se añade `#[Scope]`, se recibe `Builder $query` y `Card::` pasa a ser `$query->`. No se devuelve nada (`void`) ni se llama a `get()`.
+
+**3. Resultado en `Card.php`:**
+```php
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
+
+#[Scope]
+protected function dueToday(Builder $query): void
+{
+    $query->whereHas('review', function (Builder $q) {
+        $q->whereDate('due_at', '<=', today());
+    });
+}
+```
+
+**Uso** (Laravel pasa el `$query` solo; cada scope añade su `WHERE` a la misma consulta):
+```php
+Card::dueToday()->get();
+$deck->cards()->dueToday()->count();
+Card::where('is_key', true)->dueToday()->get();
+```
+
+- `<=` y no `=`: si un día no se repasa, esas fichas siguen pendientes.
+- Antes de Laravel 12 se escribía `public function scopeDueToday(Builder $query)`: el prefijo `scope` hacía de marca. Sigue funcionando.
+- Symfony: un método del repositorio (`CardRepository::findDueToday()`), que no se puede encadenar con otros filtros.
+- **Decisión de diseño:** una ficha sin review no sale en `dueToday()`. Al crear una ficha se le creará su review (`box = 1`, `due_at = hoy`) con un evento, en la fase 4.
+
+### 8B.3. Errores corregidos en la revisión
+
+- En `CardReview` quedó copiado de `Document` un método `deck(): HasOne` comentado, con su `use`. Se borró: `CardReview` no se relaciona directamente con `Deck`.
+- Los `use` desordenados y las líneas en blanco dobles se corrigen solos con `vendor/bin/pint`.
+
+### 8B.4. Resultado en Tinker
+
+```php
+Card::find(1)->review()->create(['due_at' => today()]);
+Card::find(2)->review()->create(['due_at' => today()->subDays(3)]);
+Card::find(3)->review()->create(['due_at' => today()->addDays(5)]);
+
+Card::dueToday()->pluck('id');                    // [1, 2]
+Card::dueToday()->toRawSql();                      // ... where exists (select * from card_reviews ...)
+Card::find(2)->review->due_at->diffForHumans();   // "3 days ago"
+```
+
+Al repetir por error la primera línea, MySQL respondió `1062 Duplicate entry '1' for key 'card_reviews_card_id_unique'` (`UniqueConstraintViolationException`). Era el índice `unique()` cumpliendo la regla "una ficha, un review", aunque el código PHP intentara saltársela.
+
+---
+
+## Fase 2 completada ✅ (2026-11-12)

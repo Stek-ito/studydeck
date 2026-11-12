@@ -313,3 +313,22 @@ php artisan tinker
 ```
 
 **Por qué esta solución:** `dump-autoload` vuelve a escanear las clases y las añade al classmap; Tinker lee el classmap al arrancar, por eso hay que salir y volver a entrar. Alternativa sin regenerar: escribir el nombre completo (`App\Models\Card`) o `use App\Models\Card;` dentro de Tinker. Hay que repetirlo cada vez que se crea un modelo nuevo (o cualquier clase que se quiera usar con su nombre corto en Tinker).
+
+---
+
+## 10. PowerShell: "Se esperaba una expresión después de '('" al pegar código PHP
+
+**Síntoma:** al pegar `Card::find(1)->review()->create(['due_at' => today()]);` aparece un `ParserError` de PowerShell: `Se esperaba una expresión después de '('` y `Falta el nombre de tipo después de '['`.
+
+**Causa:** el código PHP se pegó en **PowerShell**, no dentro de Tinker. PowerShell intenta interpretarlo con su propia sintaxis, en la que `[...]` es un tipo y `(...)` una expresión.
+
+**Cómo diagnosticarlo:** mira el prompt.
+
+| Prompt | Estás en | Se escribe |
+|---|---|---|
+| `PS C:\Roberto\StudyDeck>` | PowerShell | `php artisan ...`, `composer ...` |
+| `>` (tras el banner `Psy Shell`) | Tinker | código PHP |
+
+**Solución:** entrar antes en Tinker (`php artisan tinker`, con PHP 8.5 en esa terminal) y pegar ahí el código. Para salir, `exit`.
+
+**Por qué esta solución:** Tinker es un REPL de PHP con la aplicación de Laravel cargada. PowerShell no sabe nada de PHP. Lo mismo pasa con `curl`: en PowerShell es un alias de `Invoke-WebRequest`, y por eso se escribe `curl.exe`.

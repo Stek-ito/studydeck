@@ -42,7 +42,7 @@ Cada fase del plan de Laravel se practica construyendo una pieza de StudyDeck, e
 |---|---|---|---|
 | 0 | Diagnóstico y entorno | Proyecto creado y arrancando | [x] 2026-11-04 |
 | 1 | Routing, controladores, middleware | API de mazos y fichas en memoria | [x] 2026-11-10 |
-| 2 | Eloquent ORM | Modelo de datos y seeders | [ ] |
+| 2 | Eloquent ORM | Modelo de datos y seeders | [x] 2026-11-12 |
 | 3 | Blade, validación, auth | Pantalla de estudio, subida de PDFs, login | [ ] |
 | 4 | Artisan, Events, Jobs/Queues | Generación de fichas con Claude en background | [ ] |
 | 5 | Testing | Tests del flujo completo con Claude simulado | [ ] |
