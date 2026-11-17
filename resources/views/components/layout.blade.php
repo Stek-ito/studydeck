@@ -13,6 +13,13 @@
         <div class="mx-auto flex max-w-4xl gap-6 px-4 py-3">
             <a href="{{ route('home') }}" class="font-bold">StudyDeck</a>
             <a href="{{ route('decks.index') }}">Mis mazos</a>
+            @guest
+                <a href="{{ route('register') }}" class="ml-auto">Crear cuenta</a>
+            @endguest
+
+            @auth
+                <span class="ml-auto text-gray-600">{{ auth()->user()->name }}</span>
+            @endauth
         </div>
     </nav>
 

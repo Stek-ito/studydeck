@@ -17,7 +17,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 
 1. [ ] Teoría: cómo autentica Laravel (guards, providers, sesión) frente al `security.yaml` de Symfony
 2. [x] Blade: layout, componentes y la página de inicio
-3. [ ] Registro: Form Request, `Hash::make` y `Auth::login`
+3. [x] Registro: Form Request, `Hash::make` y `Auth::login`
 4. [ ] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
 5. [ ] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
 6. [ ] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
@@ -263,3 +263,121 @@ Route::get('/decks', function () {
 
 - `/` muestra el inicio con el menú y Tailwind; "Mis mazos" muestra 3 cajas con "10 fichas".
 - **Escapado:** con `Deck::find(1)->update(['name' => '<b>PHP</b>'])`, la caja muestra el texto `<b>PHP</b>` literal. En el código fuente aparece `&lt;b&gt;PHP&lt;/b&gt;`: `{{ }}` protege de XSS.
+
+---
+
+## Paso 3: Registro
+
+Tres piezas, más las rutas:
+
+| Pieza | Fichero | Symfony |
+|---|---|---|
+| A. Validación | `app/Http/Requests/RegisterRequest.php` | DTO + `#[MapRequestPayload]` + `#[Assert]` / FormType |
+| B. Controlador | `app/Http/Controllers/Auth/RegisterController.php` | controlador con `handleRequest()` |
+| C. Vista | `resources/views/auth/register.blade.php` | plantilla con `form_start` / `form_row` |
+| D. Rutas | `routes/web.php` | `#[Route]` |
+
+### 3.1. Form Request
+
+`php artisan make:request RegisterRequest`. Laravel valida **antes** de entrar al método del controlador. Si falla, redirige al formulario con los errores y lo que se había escrito (`old()`). Si la petición es JSON, responde 422.
+
+```php
+use Illuminate\Validation\Rules\Password;   // ⚠️ no Illuminate\Support\Facades\Password
+
+public function authorize(): bool
+{
+    return true;   // por defecto false → 403 siempre
+}
+
+public function rules(): array
+{
+    return [
+        'name' => ['required', 'string', 'max:255'],
+        'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:users,email'],
+        'password' => ['required', 'string', 'confirmed', Password::defaults()],
+    ];
+}
+```
+
+| Regla | Significa | Symfony |
+|---|---|---|
+| `unique:users,email` | no existe una fila en `users` con ese `email`. Si se omite la columna, se usa el nombre del campo | `#[UniqueEntity('email')]` |
+| `confirmed` | debe existir `password_confirmation` con el mismo valor | `RepeatedType` |
+| `lowercase` | **rechaza** el valor si tiene mayúsculas, no lo convierte | — |
+| `Password::defaults()` | política de contraseñas (mínimo 8). Es un objeto, por eso las reglas van en array | `#[Assert\PasswordStrength]` |
+
+❌ **Errores corregidos:**
+- `use Illuminate\Support\Facades\Password`. Es el **broker de recuperación de contraseña** (paso 7), no la regla, y daría `PasswordBrokerManager::defaults does not exist`. Regla práctica: `Facades\` son atajos a servicios (`Auth::`, `DB::`); `Validation\Rules\` son reglas.
+- `'min:8'` además de `Password::defaults()`: dice lo mismo dos veces.
+
+### 3.2. Controlador
+
+Convención de nombres: `create()` muestra el formulario y `store()` lo guarda.
+
+```php
+public function create(): View
+{
+    return view('auth.register');
+}
+
+public function store(RegisterRequest $request): RedirectResponse
+{
+    $user = User::create($request->validated());   // solo name, email y password
+    Auth::login($user);                              // guarda el id en la sesión
+    $request->session()->regenerate();               // contra session fixation
+
+    return redirect()->route('decks.index');         // ≈ redirectToRoute()
+}
+```
+
+- `validated()` no incluye `password_confirmation`, porque no tiene reglas propias.
+- **No hace falta `Hash::make()`:** el cast `'password' => 'hashed'` de `User` hashea al asignar. En la base de datos queda `$2y$12$...` (bcrypt).
+- `Auth::login($user)` ≈ `$security->login($user)` en Symfony.
+
+### 3.3. Vista: formularios en Blade
+
+| Herramienta | Qué hace | Symfony |
+|---|---|---|
+| `@csrf` | campo oculto `_token` (sin él, 419) | `form_start()` |
+| `old('email')` | el valor escrito antes del error | el form conserva los datos |
+| `@error('email') {{ $message }} @enderror` | el error de ese campo | `form_errors(form.email)` |
+
+```blade
+<form method="POST" action="{{ route('register') }}">
+    @csrf
+    <div>
+        <label for="name">Nombre</label>
+        <input id="name" name="name" type="text" value="{{ old('name') }}">
+        @error('name') <p class="text-red-600">{{ $message }}</p> @enderror
+    </div>
+    {{-- email: igual; password: sin old(); password_confirmation: sin old() ni @error --}}
+</form>
+```
+
+- El atributo **`name`** es la clave que llega al servidor y la que tiene que coincidir con `rules()`.
+- Las contraseñas **nunca** llevan `old()`: no se devuelven al navegador.
+- El error de `confirmed` aparece en `password`, no en `password_confirmation`.
+
+### 3.4. Rutas y el middleware `guest`
+
+```php
+Route::middleware('guest')->group(function () {
+    Route::get('/register', [RegisterController::class, 'create'])->name('register');
+    Route::post('/register', [RegisterController::class, 'store']);
+});
+```
+
+- Misma URL, distinto método: el POST no necesita nombre, porque `route('register')` da la URL.
+- `guest`: si ya hay sesión iniciada, redirige a la ruta `home`. Es lo contrario de `auth`.
+- En el layout: `@guest ... @endguest` / `@auth ... @endauth` (≈ `is_granted('IS_AUTHENTICATED')`), y `auth()->user()->name` (≈ `app.user`).
+
+### 3.5. Resultado
+
+- Formulario vacío → errores "required". Email existente → "has already been taken". Contraseñas distintas → "confirmation does not match". Nombre y email se conservan; las contraseñas no.
+- Registro correcto → redirige a "Mis mazos" con el nombre en el menú.
+- Con sesión iniciada, `/register` redirige al inicio.
+- En la base de datos: usuario 2 con la contraseña `$2y$12$...` y una fila en `sessions` con `user_id = 2`.
+
+⚠️ **Problemas detectados** (se resuelven en los pasos 4 y 9):
+- "Mis mazos" es accesible **sin** sesión iniciada.
+- Además, muestra los mazos de **todos** los usuarios: el usuario 2 ve los 3 mazos del usuario 1.
