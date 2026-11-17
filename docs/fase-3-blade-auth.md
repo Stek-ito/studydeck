@@ -16,7 +16,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 ### Camino 1: a mano, en StudyDeck
 
 1. [ ] Teoría: cómo autentica Laravel (guards, providers, sesión) frente al `security.yaml` de Symfony
-2. [ ] Blade: layout, componentes y la página de inicio
+2. [x] Blade: layout, componentes y la página de inicio
 3. [ ] Registro: Form Request, `Hash::make` y `Auth::login`
 4. [ ] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
 5. [ ] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
@@ -110,3 +110,156 @@ Symfony serializa el token (con el usuario) en la sesión. Laravel guarda solo e
    - Si el id no cambiara, el atacante usaría ese mismo id y entraría con la sesión ya autenticada.
    - `regenerate()` conserva los datos de la sesión, pero le da un **id nuevo**, y el id antiguo deja de servir.
    - En Symfony lo hace automáticamente la `session_fixation_strategy: migrate`.
+
+**Experimento:** `DB::table('sessions')->count()` da 0. Tras abrir `http://127.0.0.1:8000/` da 1: la fila tiene la IP y `user_id = null` (un *guest* con sesión). Las peticiones a `/api` no crean sesiones.
+
+---
+
+## Paso 2: Blade, layout y componentes
+
+### 2.1. Blade frente a Twig
+
+| Blade | Twig | Nota |
+|---|---|---|
+| `{{ $deck->name }}` | `{{ deck.name }}` | **escapa** el HTML (XSS) |
+| `{!! $html !!}` | `{{ html\|raw }}` | sin escapar: solo para HTML de confianza |
+| `@if ... @endif` | `{% if %}...{% endif %}` | |
+| `@foreach ($decks as $deck)` | `{% for deck in decks %}` | |
+| `@forelse ... @empty ... @endforelse` | `{% for %}...{% else %}...{% endfor %}` | `@empty` sale si la lista está vacía |
+| `{{ route('home') }}` | `{{ path('home') }}` | |
+| `@csrf` | `{{ csrf_token('...') }}` | |
+
+Blade **es PHP**: dentro de `{{ }}` se escribe PHP normal. Se compila a PHP plano en `storage/framework/views/`.
+
+### 2.2. Herencia frente a componentes
+
+| | Herencia | Componentes (los que usamos) |
+|---|---|---|
+| Layout | `@yield('content')` | `{{ $slot }}` |
+| Página | `@extends('layout')` + `@section` | `<x-layout> ... </x-layout>` |
+| Twig | `{% extends %}` + `{% block %}` | `{% embed %}` / Twig Components |
+
+- El fichero `resources/views/components/deck-card.blade.php` se usa como `<x-deck-card>`.
+- **`@props([...])`** declara los atributos que recibe, como los parámetros de una función. Con valor por defecto: `@props(['title' => 'StudyDeck'])`. Sin él: `@props(['deck'])`.
+- **`{{ $slot }}`** es lo que se escribe entre `<x-layout>` y `</x-layout>`.
+- **`deck="$deck"`** pasa el **texto** `"$deck"`; **`:deck="$deck"`** pasa la **variable** PHP.
+
+Un componente es como **una función que devuelve HTML**:
+
+| Función PHP | Componente Blade |
+|---|---|
+| nombre `deckCard` | fichero `deck-card.blade.php` → `<x-deck-card>` |
+| parámetro `Deck $deck` | `@props(['deck'])` |
+| `return '<div>...'` | el HTML debajo del `@props` |
+| llamada `deckCard($deck)` | `<x-deck-card :deck="$deck" />` |
+
+### 2.3. La regla: un solo esqueleto, el resto son trozos
+
+```
+layout.blade.php                ← la ÚNICA con <html>, <head>, <body>, <nav>
+└── {{ $slot }}
+    └── decks/index.blade.php   ← la página "Mis mazos"
+        └── @forelse
+            ├── <x-deck-card>   ← solo la caja de UN mazo
+            ├── <x-deck-card>
+            └── <x-deck-card>
+```
+
+| Fichero | Contiene |
+|---|---|
+| `layout.blade.php` | el esqueleto de la página (`<html>`… `{{ $slot }}` …`</html>`). **Solo uno** en todo el proyecto |
+| cualquier otro componente o página | solo su trozo de HTML, **sin** `<html>`, `<head>` ni `<body>` |
+
+❌ **Error típico:** crear un componente copiando el layout y metiendo dentro la caja.
+- Cada mazo pintaría una página HTML entera dentro de otra: tres `<html>` y tres menús dentro del `<main>`.
+- Además falla al cargar: el layout copiado usa `$title`, que el componente no declara en `@props` → `Undefined variable $title`.
+- En Twig sería como copiar `base.html.twig` entero en un `_deck_card.html.twig` que se incluye en un bucle.
+
+✅ **El componente correcto** (`resources/views/components/deck-card.blade.php`):
+
+```blade
+@props(['deck'])
+
+<div class="rounded-lg border bg-white p-4">
+    <h2 class="font-bold">{{ $deck->name }}</h2>
+    <p class="text-gray-600">{{ $deck->description }}</p>
+    <p class="text-sm">{{ $deck->cards_count }} fichas</p>
+</div>
+```
+
+`cards_count` no es una columna: la añade `withCount('cards')` en la consulta.
+
+### 2.4. El layout y la página de inicio
+
+```blade
+{{-- resources/views/components/layout.blade.php --}}
+@props(['title' => 'StudyDeck'])
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ $title }} · StudyDeck</title>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+<body class="min-h-screen bg-gray-50 text-gray-900">
+    <nav class="border-b bg-white">
+        <div class="mx-auto flex max-w-4xl gap-6 px-4 py-3">
+            <a href="{{ route('home') }}" class="font-bold">StudyDeck</a>
+            <a href="{{ route('decks.index') }}">Mis mazos</a>
+        </div>
+    </nav>
+    <main class="mx-auto max-w-4xl px-4 py-8">
+        {{ $slot }}
+    </main>
+</body>
+</html>
+
+{{-- resources/views/home.blade.php --}}
+<x-layout title="Inicio">
+    <h1 class="text-2xl font-bold">Bienvenido a StudyDeck</h1>
+    <p class="mt-2 text-gray-600">Convierte tus PDFs en fichas y repásalas cada día.</p>
+</x-layout>
+```
+
+### 2.5. Vite y Tailwind
+
+- Laravel trae **Tailwind** compilado con **Vite** (≈ Webpack Encore / AssetMapper). `@vite([...])` inserta los `<link>` y `<script>`.
+- Para trabajar: `npm install` una vez, y luego dos terminales: `php artisan serve` y `npm run dev`.
+- Mientras `npm run dev` está en marcha existe el fichero `public/hot`: así sabe `@vite` que tiene que pedir los ficheros al servidor de Vite.
+
+### 2.6. La página "Mis mazos" y sus rutas
+
+```blade
+{{-- resources/views/decks/index.blade.php --}}
+<x-layout title="Mis mazos">
+    <h1 class="text-2xl font-bold">Mis mazos</h1>
+    <div class="mt-6 grid gap-4 sm:grid-cols-2">
+        @forelse ($decks as $deck)
+            <x-deck-card :deck="$deck" />
+        @empty
+            <p class="text-gray-600">No tienes mazos creados.</p>
+        @endforelse
+    </div>
+</x-layout>
+```
+
+```php
+// routes/web.php
+Route::view('/', 'home')->name('home');
+
+Route::get('/decks', function () {
+    return view('decks.index', ['decks' => Deck::withCount('cards')->get()]);   // provisional: paso 9
+})->name('decks.index');
+```
+
+- `view('decks.index', ['decks' => ...])` → fichero `decks/index.blade.php`, variable `$decks`. Equivale a `$this->render('decks/index.html.twig', [...])`.
+- `<x-deck-card ... />` se cierra solo porque no lleva contenido. `<x-layout>` tiene apertura y cierre porque lleva el `$slot`.
+- **Comentarios:** `<!-- -->` llega al navegador; `{{-- --}}` lo elimina Blade (≈ `{# #}` de Twig).
+- **Los nombres de ruta son globales** (web y api comparten espacio). La API pasó a `api.decks.index`, `api.decks.show`, `api.cards.index` y `api.cards.show` para no chocar con `decks.index` de la web.
+
+### 2.7. Resultado
+
+- `/` muestra el inicio con el menú y Tailwind; "Mis mazos" muestra 3 cajas con "10 fichas".
+- **Escapado:** con `Deck::find(1)->update(['name' => '<b>PHP</b>'])`, la caja muestra el texto `<b>PHP</b>` literal. En el código fuente aparece `&lt;b&gt;PHP&lt;/b&gt;`: `{{ }}` protege de XSS.

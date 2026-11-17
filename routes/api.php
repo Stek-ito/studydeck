@@ -9,14 +9,14 @@ Route::get('/ping', function () {
 });
 
 // Deck routes
-Route::get('/decks', [DeckController::class, 'index'])->name('decks.index');
-Route::get('/decks/{deck}', [DeckController::class, 'show'])->name('decks.show')->whereNumber('deck');
+Route::get('/decks', [DeckController::class, 'index'])->name('api.decks.index');
+Route::get('/decks/{deck}', [DeckController::class, 'show'])->name('api.decks.show')->whereNumber('deck');
 
 // Card routes
 Route::prefix('decks/{deck}/cards')
     ->whereNumber(['deck', 'card'])
     ->scopeBindings()
     ->group(function () {
-        Route::get('/', [CardController::class, 'index'])->name('cards.index');
-        Route::get('/{card}', [CardController::class, 'show'])->name('cards.show');
+        Route::get('/', [CardController::class, 'index'])->name('api.cards.index');
+        Route::get('/{card}', [CardController::class, 'show'])->name('api.cards.show');
     });
