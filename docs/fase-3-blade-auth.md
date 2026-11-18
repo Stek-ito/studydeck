@@ -18,7 +18,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 1. [ ] Teoría: cómo autentica Laravel (guards, providers, sesión) frente al `security.yaml` de Symfony
 2. [x] Blade: layout, componentes y la página de inicio
 3. [x] Registro: Form Request, `Hash::make` y `Auth::login`
-4. [ ] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
+4. [x] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
 5. [ ] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
 6. [ ] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
 7. [ ] Recuperación de contraseña: tokens de un solo uso y `Password` broker
@@ -48,6 +48,20 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 | URLs firmadas (`URL::signedRoute`) | `UriSigner` / `symfonycasts/verify-email-bundle` |
 | `Password` broker (reset) | `symfonycasts/reset-password-bundle` |
 | Fortify / starter kit | `make:security:form-login` + `make:registration-form` (MakerBundle) |
+
+## OWASP Top 10:2025 en esta fase
+
+Edición vigente comprobada el 2026-11-18 en [top10.owasp.org](https://top10.owasp.org/2025/0x00_2025-Introduction). Antes de citarla, revisa si hay una más reciente.
+
+| Categoría | Dónde aparece en StudyDeck | Mitigación |
+|---|---|---|
+| **A01 Broken Access Control** | "Mis mazos" visible sin login y con mazos ajenos; IDOR en rutas anidadas | middleware `auth` (paso 4), consultas por usuario + `DeckPolicy` (paso 9), `scopeBindings()` (fase 2) |
+| **A02 Security Misconfiguration** | `APP_DEBUG=true` muestra trazas y rutas de ficheros (se vio en los 404/500 de la fase 2) | `APP_DEBUG=false` en producción |
+| **A04 Cryptographic Failures** | contraseñas | bcrypt con el cast `hashed`; nunca devolver la contraseña (`old()`, `#[Hidden]`) |
+| **A05 Injection** | XSS en vistas, SQL | `{{ }}` escapa; Eloquent/Query Builder usan bindings; `{!! !!}` solo con HTML de confianza |
+| **A07 Authentication Failures** | login, registro, sesión, enumeración de usuarios | mensaje de error genérico (sin regla `exists:users`), `session()->regenerate()`, `invalidate()` al salir, política de contraseñas, rate limiting (paso 5), 2FA (paso 8) |
+| **A09 Security Logging & Alerting Failures** | intentos de login fallidos | registrar los bloqueos por rate limiting (paso 5) |
+| **A10 Mishandling of Exceptional Conditions** | errores 500 por `TypeError` (fase 2) | tipos correctos, formato de error único, sin filtrar detalles internos |
 
 ## Qué se hace a mano y qué hace el kit
 
@@ -381,3 +395,94 @@ Route::middleware('guest')->group(function () {
 ⚠️ **Problemas detectados** (se resuelven en los pasos 4 y 9):
 - "Mis mazos" es accesible **sin** sesión iniciada.
 - Además, muestra los mazos de **todos** los usuarios: el usuario 2 ve los 3 mazos del usuario 1.
+
+---
+
+## Paso 4: Login, logout y proteger rutas
+
+### 4.1. Teoría
+
+| | Registro | Login |
+|---|---|---|
+| ¿Tienes el `User`? | sí, lo acabas de crear | no, solo las credenciales |
+| Método | `Auth::login($user)` | `Auth::attempt($credentials, $remember)`: busca, comprueba el hash y hace `login` |
+
+- **Mensaje genérico** cuando falla: el mismo si el email no existe que si la contraseña es incorrecta. Evita la enumeración de usuarios (**A07:2025**). Por eso tampoco se usa la regla `exists:users,email`.
+- **Logout**: `Auth::logout()` + `session()->invalidate()` (borra los datos y da un id nuevo) + `session()->regenerateToken()` (nuevo token CSRF).
+- **Middleware `auth`**: sin sesión, redirige a la ruta llamada **`login`** (el nombre es obligatorio) y guarda la URL pedida. `redirect()->intended()` vuelve a ella tras el login (≈ `target_path` de Symfony).
+
+### 4.2. `LoginRequest`
+
+```php
+'email' => ['required', 'string', 'email'],
+'password' => ['required', 'string'],
+```
+
+Sin `unique` (el email debe existir), sin `Password::defaults()` (se comprueba, no se elige) y sin `exists` (enumeración). `remember` no lleva regla: se lee con `$request->boolean('remember')`.
+
+### 4.3. `LoginController`
+
+```php
+public function store(LoginRequest $request): RedirectResponse
+{
+    if (! Auth::attempt($request->validated(), $request->boolean('remember'))) {
+        throw ValidationException::withMessages(['email' => __('auth.failed')]);
+    }
+
+    $request->session()->regenerate();
+
+    return redirect()->intended(route('decks.index'));
+}
+
+public function destroy(Request $request): RedirectResponse
+{
+    Auth::logout();
+    $request->session()->invalidate();
+    $request->session()->regenerateToken();
+
+    return redirect()->route('home');
+}
+```
+
+- `ValidationException::withMessages()` se comporta como una regla fallida: redirige al formulario con el error y `old()`.
+- `__('auth.failed')` → *"These credentials do not match our records."*
+
+| Línea | Protege de |
+|---|---|
+| `regenerate()` en el login | session fixation |
+| `invalidate()` en el logout | reutilizar los datos de la sesión anterior |
+| `regenerateToken()` | reutilizar el token CSRF antiguo |
+
+### 4.4. Vista, "Recuérdame" y rutas
+
+- La vista es la del registro sin `name` ni `password_confirmation`, más la casilla `remember`.
+- **Una casilla sin marcar no se envía.** `boolean('remember')` devuelve `false` en ese caso.
+- Con "Recuérdame", Laravel guarda un valor aleatorio de 60 caracteres en `users.remember_token` y envía una cookie de larga duración (≈ `remember_me` de Symfony).
+
+```php
+Route::middleware('guest')->group(function () {
+    // register (GET/POST)
+    Route::get('/login', [LoginController::class, 'create'])->name('login');
+    Route::post('/login', [LoginController::class, 'store']);
+});
+
+Route::middleware('auth')->group(function () {
+    Route::get('/decks', ...)->name('decks.index');
+    Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
+});
+```
+
+- Cada grupo equivale a una línea de `access_control`, pero junto a las rutas.
+- **Logout por `POST` con `@csrf`, nunca un enlace `GET`:** si no, un `<img src="/logout">` en otra web cerraría tu sesión. Es CSRF (**A01:2025**). En el layout, "Salir" es un formulario con un botón.
+- El menú muestra "Mis mazos", el nombre y "Salir" dentro de `@auth`, y "Entrar" y "Crear cuenta" dentro de `@guest`.
+
+### 4.5. Resultado
+
+1. `/decks` sin sesión → redirige a `/login`.
+2. Contraseña incorrecta y email inexistente → el mismo mensaje genérico.
+3. Login correcto → vuelve a `/decks` (`intended`).
+4. El menú cambia según `@auth` / `@guest`.
+5. "Salir" → inicio, y `/decks` vuelve a pedir el login.
+6. Con "Recuérdame", `remember_token` tiene 60 caracteres aleatorios.
+
+✅ Resuelto el primer problema del paso 3 (acceso sin login). ⚠️ Sigue pendiente el segundo (mazos de otros usuarios): paso 9.

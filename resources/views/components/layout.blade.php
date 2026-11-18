@@ -12,14 +12,21 @@
     <nav class="border-b bg-white">
         <div class="mx-auto flex max-w-4xl gap-6 px-4 py-3">
             <a href="{{ route('home') }}" class="font-bold">StudyDeck</a>
-            <a href="{{ route('decks.index') }}">Mis mazos</a>
-            @guest
-                <a href="{{ route('register') }}" class="ml-auto">Crear cuenta</a>
-            @endguest
 
             @auth
+                <a href="{{ route('decks.index') }}">Mis mazos</a>
+
                 <span class="ml-auto text-gray-600">{{ auth()->user()->name }}</span>
+                <form method="POST" action="{{ route('logout') }}">
+                    @csrf
+                    <button type="submit" class="underline">Salir</button>
+                </form>
             @endauth
+
+            @guest
+                <a href="{{ route('login') }}" class="ml-auto">Entrar</a>
+                <a href="{{ route('register') }}">Crear cuenta</a>
+            @endguest
         </div>
     </nav>
 
