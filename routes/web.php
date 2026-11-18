@@ -19,6 +19,6 @@ Route::middleware('auth')->group(function () {
     Route::get('/decks', function () {
         return view('decks.index', ['decks' => Deck::withCount('cards')->get()]);
     })->name('decks.index');
-    
+
     Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
 });

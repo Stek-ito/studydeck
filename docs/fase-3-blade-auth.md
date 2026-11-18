@@ -19,7 +19,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 2. [x] Blade: layout, componentes y la página de inicio
 3. [x] Registro: Form Request, `Hash::make` y `Auth::login`
 4. [x] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
-5. [ ] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
+5. [x] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
 6. [ ] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
 7. [ ] Recuperación de contraseña: tokens de un solo uso y `Password` broker
 8. [ ] 2FA con TOTP: secreto, código QR, códigos de recuperación y el paso de "challenge" tras el login
@@ -486,3 +486,78 @@ Route::middleware('auth')->group(function () {
 6. Con "Recuérdame", `remember_token` tiene 60 caracteres aleatorios.
 
 ✅ Resuelto el primer problema del paso 3 (acceso sin login). ⚠️ Sigue pendiente el segundo (mazos de otros usuarios): paso 9.
+
+---
+
+## Paso 5: Rate limiting del login
+
+**Objetivo:** como mucho 5 intentos fallidos por minuto para cada email + IP, y registrar los bloqueos. Cubre fuerza bruta y credential stuffing (**A07:2025**) y deja constancia de los bloqueos (**A09:2025**).
+
+**Symfony:** `login_throttling: max_attempts: 5` en el firewall, que usa el mismo concepto de RateLimiter.
+
+### 5.1. `RateLimiter`: un contador con caducidad en la caché (tabla `cache`)
+
+| Método | Qué hace |
+|---|---|
+| `tooManyAttempts($key, 5)` | ¿ha llegado a 5? |
+| `hit($key)` | +1, caduca a los 60 s |
+| `availableIn($key)` | segundos que faltan para desbloquear |
+| `clear($key)` | contador a 0 |
+| `attempts($key)` | intentos actuales (útil en Tinker) |
+
+### 5.2. La clave: email + IP
+
+| Clave | Problema |
+|---|---|
+| solo la IP | bloquea a todos los que comparten IP (oficina, universidad) |
+| solo el email | un atacante puede bloquear tu cuenta a propósito (DoS) |
+| **email + IP** | bloquea a quien falla, desde ese sitio y contra esa cuenta |
+
+Contra una botnet con miles de IPs no basta. En producción se añade un límite solo por IP más alto, o un WAF: **defensa en profundidad**.
+
+### 5.3. Código
+
+```php
+public function store(LoginRequest $request): RedirectResponse
+{
+    $key = $this->throttleKey($request);
+
+    if (RateLimiter::tooManyAttempts($key, 5)) {                     // 1. ¿bloqueado? → no se comprueba nada más
+        $seconds = RateLimiter::availableIn($key);
+        Log::warning('Login lockout', ['email' => $request->input('email'), 'ip' => $request->ip()]);
+
+        throw ValidationException::withMessages(['email' => __('auth.throttle', ['seconds' => $seconds])]);
+    }
+
+    if (! Auth::attempt($request->validated(), $request->boolean('remember'))) {
+        RateLimiter::hit($key);                                       // 2. fallo → +1
+        throw ValidationException::withMessages(['email' => __('auth.failed')]);
+    }
+
+    RateLimiter::clear($key);                                         // 3. éxito → a 0
+    $request->session()->regenerate();
+
+    return redirect()->intended(route('decks.index'));
+}
+
+private function throttleKey(Request $request): string
+{
+    return Str::transliterate(Str::lower($request->string('email')) . '|' . $request->ip());
+}
+```
+
+- **El orden importa:** se comprueba el bloqueo antes de `attempt()`. Así, estando bloqueado, ni la contraseña correcta funciona, y se ahorra el coste de bcrypt.
+- `Str::transliterate()` evita claves "distintas" con caracteres que parecen iguales.
+- **En el log nunca va la contraseña:** los logs los lee más gente y se guardan más tiempo.
+- `$request->string()` devuelve un objeto `Stringable` (para encadenar métodos), y en el log aparecería como `[object] (Illuminate\Support\Stringable: ...)`. Para el valor tal cual se usa `$request->input()`.
+- **Alternativa:** el middleware `throttle:5,1` en la ruta. Cuenta también los intentos correctos y responde con un 429 en lugar de un error en el formulario.
+
+### 5.4. Resultado
+
+1. Intentos 1 a 5 → error genérico; el 6.º → *"Too many login attempts. Please try again in N seconds."*
+2. Durante el bloqueo, la contraseña correcta tampoco entra.
+3. Otra cuenta desde la misma IP entra sin problema.
+4. `storage/logs/laravel.log`: `local.WARNING: Login lockout {"email":"roberto@studydeck.test","ip":"127.0.0.1"}`, sin contraseña.
+5. Pasado el minuto, el login correcto entra y `RateLimiter::attempts('roberto@studydeck.test|127.0.0.1')` devuelve `0`.
+
+Los usuarios del seeder tienen la contraseña `password`, que pone `UserFactory`.
