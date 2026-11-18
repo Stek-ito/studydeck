@@ -20,7 +20,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 3. [x] Registro: Form Request, `Hash::make` y `Auth::login`
 4. [x] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
 5. [x] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
-6. [ ] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
+6. [x] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
 7. [ ] Recuperación de contraseña: tokens de un solo uso y `Password` broker
 8. [ ] 2FA con TOTP: secreto, código QR, códigos de recuperación y el paso de "challenge" tras el login
 9. [ ] `DeckPolicy`: cada usuario solo ve y edita sus mazos
@@ -561,3 +561,85 @@ private function throttleKey(Request $request): string
 5. Pasado el minuto, el login correcto entra y `RateLimiter::attempts('roberto@studydeck.test|127.0.0.1')` devuelve `0`.
 
 Los usuarios del seeder tienen la contraseña `password`, que pone `UserFactory`.
+
+---
+
+## Paso 6: Verificación de email
+
+**Objetivo:** comprobar que el email del registro es del usuario (**A07:2025**). Hasta que no pulse el enlace del correo, no entra en "Mis mazos". Es imprescindible antes de la recuperación de contraseña, que envía el enlace a ese email.
+
+**Symfony:** `symfonycasts/verify-email-bundle` (`VerifyEmailHelper`) y `UriSigner`.
+
+### 6.1. URLs firmadas
+
+```
+/email/verify/4/1f5bf039...?expires=1795009350&signature=40d1804b...
+              │  │                │                    └─ HMAC-SHA256 de la URL con APP_KEY
+              │  │                └─ caducidad: 60 minutos
+              │  └─ sha1 del email (si cambia el email, el enlace deja de valer)
+              └─ id del usuario
+```
+
+- Si se cambia cualquier parte de la URL, la firma no coincide → **403 Invalid signature** (**A08:2025 Software or Data Integrity Failures**).
+- No hace falta guardar tokens en la base de datos: la URL se valida sola.
+- La `APP_KEY` nunca va a git (**A04:2025 Cryptographic Failures**). Con ella, cualquiera podría firmar URLs.
+
+### 6.2. Piezas
+
+| Pieza | Código |
+|---|---|
+| Modelo | `class User extends Authenticatable implements MustVerifyEmail`. Los métodos ya vienen en `Authenticatable` |
+| Disparo | `event(new Registered($user));` en `RegisterController::store()`. El listener `SendEmailVerificationNotification` de Laravel envía el correo (≈ `EventDispatcher` + subscriber) |
+| Correo | `MAIL_MAILER=log`: el correo se escribe en `storage/logs/laravel.log` |
+| Controlador | `notice()`, `verify(EmailVerificationRequest $request)` con `$request->fulfill()`, y `send()` con `sendEmailVerificationNotification()` |
+| Vista | `auth/verify-email`: explicación, aviso flash y formulario `POST` para reenviar |
+
+- `EmailVerificationRequest::authorize()` comprueba que el `{id}` y el `{hash}` son **del usuario con sesión**. Nadie puede verificar el email de otro (**A01:2025**).
+- `fulfill()` rellena `email_verified_at` y lanza el evento `Verified`.
+- **Mensaje flash:** `back()->with('status', 'verification-link-sent')` y en la vista `session('status')`. Dura una sola petición (≈ `addFlash()` / `app.flashes()`).
+- `View|RedirectResponse` es un *union type* para métodos que devuelven una vista o una redirección.
+- Al descomentar `use MustVerifyEmail` se borró por error `use Database\Factories\UserFactory;`. No falla al ejecutar, pero el PHPDoc `@use HasFactory<UserFactory>` deja de resolverse y el IDE pierde el autocompletado.
+
+### 6.3. Rutas
+
+```php
+Route::middleware('auth')->group(function () {
+    Route::get('/email/verify', [EmailVerificationController::class, 'notice'])
+        ->name('verification.notice');
+    Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
+        ->middleware(['signed', 'throttle:6,1'])->name('verification.verify');
+    Route::post('/email/verification-notification', [EmailVerificationController::class, 'send'])
+        ->middleware('throttle:6,1')->name('verification.send');
+
+    Route::middleware('verified')->group(function () {
+        Route::get('/decks', ...)->name('decks.index');
+    });
+
+    Route::post('/logout', ...)->name('logout');
+});
+```
+
+- Los nombres `verification.notice` y `verification.verify` son **obligatorios**: los usan el middleware `verified` y la notificación.
+- `signed` valida la firma y la caducidad. `throttle:6,1` = 6 por minuto: evita usar el reenvío para inundar un buzón.
+- **Grupos anidados:** las rutas de verificación y el logout van solo con `auth`. Si estuvieran detrás de `verified`, un usuario sin verificar nunca podría verificarse.
+
+❌ **Error de la revisión:** `/decks` quedó dentro de `auth`, pero fuera de `verified`, y los usuarios sin verificar entraban. No da ningún error: solo se detecta **probando el caso negativo**. Es A01: el control existe, pero no se aplica donde toca.
+
+### 6.4. Sacar el enlace del log
+
+En la parte HTML del correo, `&` aparece como `&amp;`. Este comando saca la última URL ya limpia:
+
+```bash
+(Select-String -Path storage\logs\laravel.log -Pattern 'http://127\.0\.0\.1:8000/email/verify/[^\s"<\]\)]+' -AllMatches | Select-Object -Last 1).Matches[-1].Value -replace '&amp;','&'
+```
+
+El enlace se abre en **el mismo navegador** donde está la sesión de ese usuario.
+
+### 6.5. Resultado
+
+1. Registro → pantalla "Verifica tu email".
+2. El enlace aparece en `laravel.log`.
+3. URL con la firma modificada → 403 Invalid signature.
+4. El enlace correcto → "Mis mazos", con `email_verified_at` relleno.
+5. "Reenviar correo" → aviso verde (flash) y un enlace nuevo en el log. Al recargar, el aviso desaparece.
+6. Los usuarios de `UserFactory` ya vienen verificados; los registrados antes de este paso tienen que verificarse.
