@@ -21,7 +21,7 @@ Si algo falla, mira [troubleshooting.md](troubleshooting.md). Un commit por paso
 4. [x] Login y logout: `Auth::attempt`, `session()->regenerate()`, middleware `auth` y `guest`
 5. [x] Rate limiting del login: `RateLimiter`, 5 intentos por email e IP
 6. [x] Verificación de email: `MustVerifyEmail`, URLs firmadas, middleware `verified` (correo con el driver `log`)
-7. [ ] Recuperación de contraseña: tokens de un solo uso y `Password` broker
+7. [x] Recuperación de contraseña: tokens de un solo uso y `Password` broker
 8. [ ] 2FA con TOTP: secreto, código QR, códigos de recuperación y el paso de "challenge" tras el login
 9. [ ] `DeckPolicy`: cada usuario solo ve y edita sus mazos
 10. [ ] Pantalla de estudio: `dueToday()`, `LeitnerScheduler` y "Lo sé" / "Repasar"
@@ -643,3 +643,117 @@ El enlace se abre en **el mismo navegador** donde está la sesión de ese usuari
 4. El enlace correcto → "Mis mazos", con `email_verified_at` relleno.
 5. "Reenviar correo" → aviso verde (flash) y un enlace nuevo en el log. Al recargar, el aviso desaparece.
 6. Los usuarios de `UserFactory` ya vienen verificados; los registrados antes de este paso tienen que verificarse.
+
+---
+
+## Paso 7: Recuperación de contraseña
+
+**Objetivo:** "¿Has olvidado tu contraseña?" → correo con enlace → formulario para elegir una contraseña nueva. Es uno de los flujos más atacados: una recuperación débil permite robar cuentas (**A07:2025**).
+
+**Symfony:** `symfonycasts/reset-password-bundle` (entidad `ResetPasswordRequest` con un selector y un verificador hasheado).
+
+### 7.1. Token en la base de datos frente a URL firmada
+
+| Requisito | URL firmada (paso 6) | Token en BD (paso 7) |
+|---|---|---|
+| Un solo uso | ❌ vale hasta que caduca | ✅ se borra al usarlo |
+| Revocable | ❌ | ✅ pedir otro sobrescribe el anterior |
+| ¿Importa reutilizarlo? | no: verificar es idempotente | sí: permitiría volver a cambiar la contraseña |
+
+Tabla `password_reset_tokens`: `email` (PK, un token por usuario), `token` (**hasheado con bcrypt**: quien robe la BD no puede usarlo, **A04:2025**) y `created_at` (caduca a los 60 minutos, `config/auth.php`).
+
+### 7.2. El broker `Password` (fachada)
+
+| Método | Devuelve |
+|---|---|
+| `Password::sendResetLink(['email' => ...])` | `RESET_LINK_SENT`, `INVALID_USER`, `RESET_THROTTLED` (1 por minuto y email) |
+| `Password::reset($datos, fn ($user, $password) => ...)` | `PASSWORD_RESET`, `INVALID_TOKEN`, `INVALID_USER`… Ejecuta el callback solo si todo es válido, y borra el token |
+
+### 7.3. Pedir el enlace: `PasswordResetLinkController`
+
+```php
+public function store(Request $request): RedirectResponse
+{
+    $request->validate(['email' => ['required', 'string', 'email']]);
+
+    Password::sendResetLink($request->only('email'));   // el estado se ignora A PROPÓSITO
+
+    return back()->with('status', __('If that email is registered, we have sent you a password reset link.'));
+}
+```
+
+- **Por qué se ignora el estado:** mostrar "ese email no está registrado" revelaría qué emails tienen cuenta (enumeración de usuarios, **A07:2025**). Siempre se responde lo mismo.
+- ❌ Respuesta que di en la revisión: *"el resultado no nos interesa porque no depende de nosotros"*. Sí depende de nosotros: **no se muestra a propósito**.
+- El starter kit oficial sí muestra *"We can't find a user with that email address."* (se comprobará en el paso 12).
+- `$request->validate([...])` valida sin Form Request; para un solo campo no merece una clase.
+
+### 7.4. Elegir la contraseña nueva: `NewPasswordController`
+
+El correo enlaza a `/reset-password/{token}?email=...`.
+
+```php
+use Illuminate\Support\Facades\Password;
+use Illuminate\Validation\Rules\Password as RulesPassword;   // alias: dos clases con el mismo nombre
+
+public function create(Request $request, string $token): View
+{
+    return view('auth.reset-password', ['token' => $token, 'email' => $request->query('email')]);
+}
+
+public function store(Request $request): RedirectResponse
+{
+    $request->validate([
+        'token' => ['required'],
+        'email' => ['required', 'string', 'email'],
+        'password' => ['required', 'string', 'confirmed', RulesPassword::defaults()],
+    ]);
+
+    $status = Password::reset($request->only('email', 'password', 'password_confirmation', 'token'),
+        function (User $user, string $password) {
+            $user->forceFill(['password' => $password, 'remember_token' => Str::random(60)])->save();
+            event(new PasswordReset($user));
+        });
+
+    if ($status !== Password::PASSWORD_RESET) {
+        return back()->withInput($request->only('email'))
+            ->withErrors(['email' => __('This password reset link is invalid or has expired.')]);
+    }
+
+    return redirect()->route('login')->with('status', __('Your password has been reset.'));
+}
+```
+
+- `forceFill` se salta `#[Fillable]` (`remember_token` no es fillable). Es seguro: es código nuestro.
+- Renovar `remember_token` invalida las cookies de "Recuérdame" en todos los dispositivos (**A07**).
+- **El error es genérico** para `INVALID_TOKEN` y `INVALID_USER`: si no, con tokens inventados se podría volver a enumerar emails.
+- ❌ **Error de la revisión:** faltaba el final del método (el `if` y los `return`) y el tipo de retorno. Sin `return`, Laravel responde con una página **en blanco** tanto si funciona como si falla. Es **A10:2025 Mishandling of Exceptional Conditions**. Con `: RedirectResponse`, PHP habría lanzado un `TypeError` en la primera prueba: es otra razón para poner siempre los tipos.
+
+### 7.5. Vistas
+
+- `forgot-password`: campo email, aviso flash y formulario a `password.email`.
+- `reset-password`: `<input type="hidden" name="token" value="{{ $token }}">` y `value="{{ old('email', $email) }}"` (el segundo argumento es el valor por defecto).
+- `login`: enlace a `password.request` y el aviso `session('status')`.
+- **Flash con clave y valor:** `->with('status', 'texto')` → `session('status')` devuelve `'texto'`.
+  - ❌ Error de la revisión: `@if (session('status') === 'status')` compara el valor con el nombre de la clave y nunca se cumple. Si el flash es el propio mensaje: `@if (session('status')) {{ session('status') }} @endif`. Si es un código (como `'verification-link-sent'`): se compara con ese código.
+- Las páginas con tokens en la URL no deben cargar scripts de terceros (fuga por la cabecera `Referer`).
+
+### 7.6. Rutas (en `guest`, nombres obligatorios)
+
+```php
+Route::get('/forgot-password', [PasswordResetLinkController::class, 'create'])->name('password.request');
+Route::post('/forgot-password', [PasswordResetLinkController::class, 'store'])
+    ->middleware('throttle:6,1')->name('password.email');
+Route::get('/reset-password/{token}', [NewPasswordController::class, 'create'])->name('password.reset');
+Route::post('/reset-password', [NewPasswordController::class, 'store'])->name('password.store');
+```
+
+El broker limita **por email**; `throttle:6,1` limita **por IP**, para que nadie use el formulario para enviar correos a miles de direcciones distintas (defensa en profundidad).
+
+### 7.7. Resultado
+
+1. Pedir el enlace → aviso verde.
+2. Email inexistente → el **mismo** aviso.
+3. En `password_reset_tokens` el token es un hash `$2y$12$...`, distinto del de la URL.
+4. Enlace → email ya relleno → contraseña nueva → login con *"Your password has been reset."*.
+5. Reutilizar el enlace → *"invalid or has expired"*, y la tabla queda con 0 filas.
+6. Token inventado → el mismo error genérico.

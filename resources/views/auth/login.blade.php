@@ -1,6 +1,8 @@
 <x-layout title="Entrar">
     <h1 class="text-2xl font-bold">Entrar</h1>
-
+    @if (session('status'))
+        <p class="mt-4 text-sm text-green-700">{{ session('status') }}</p>
+    @endif
     <form method="POST" action="{{ route('login') }}" class="mt-6 max-w-sm space-y-4">
         @csrf
 
@@ -27,7 +29,9 @@
             <label for="remember" class="text-sm">Recuérdame</label>
         </div>
 
+        
         <button type="submit" class="rounded bg-gray-900 px-4 py-2 text-white">Entrar</button>
+        <a href="{{ route('password.request') }}" class="text-sm underline">¿Has olvidado tu contraseña?</a>
 
         <p class="text-sm text-gray-600">
             ¿No tienes cuenta? <a href="{{ route('register') }}" class="underline">Crea una</a>
