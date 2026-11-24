@@ -844,3 +844,27 @@ public static function rfc6238Vectors(): array
 - Son los vectores oficiales del RFC 6238 (los 6 últimos dígitos de los 8 publicados). `081804` y `005924` prueban el relleno con ceros.
 - `assertSame` y no `assertEquals`: compara tipo y valor, como `===`.
 - Resultado: `5 passed` con `php artisan test --filter=TotpTest`.
+
+### 8.3. Secreto aleatorio y Base32
+
+```php
+public function generateSecret(): string
+{
+    return Base32::encode(random_bytes(20));   // 160 bits → 32 caracteres A-Z2-7
+}
+```
+
+- **`random_bytes()`** es un CSPRNG. `rand()` y `mt_rand()` son predecibles: con unas pocas salidas se reconstruye su estado. Un secreto predecible anula el 2FA (**A04:2025 Cryptographic Failures**). Symfony: `random_bytes()` o `ByteString::fromRandom()`.
+- **Base32** (RFC 4648, `app/Services/Base32.php`, boilerplate): es el formato que esperan las apps de autenticación. Solo usa `A-Z` y `2-7`, sin caracteres que se confundan (`0`/`O`, `1`/`I`), así que se puede teclear a mano si el QR falla. Se omite el relleno `=`.
+- En la BD y en el QR va el secreto **en Base32**; antes de llamar a `code()` hay que hacer `Base32::decode()`, porque `code()` trabaja con bytes.
+
+**Tests añadidos a `TotpTest`:**
+
+| Test | Comprueba |
+|---|---|
+| `test_base32_encodes_rfc_4648_vector` | `encode('foobar') === 'MZXW6YTBOI'` (vector del RFC 4648 sin `=`) |
+| `test_base32_decodes_the_rfc_6238_secret` | `decode('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ') === '12345678901234567890'` |
+| `test_generated_secret_is_32_base32_characters` | `assertMatchesRegularExpression('/^[A-Z2-7]{32}$/', ...)` |
+
+- Lo aleatorio no se compara con un valor fijo: se comprueba su **forma** (longitud y alfabeto).
+- Resultado: `8 passed`.

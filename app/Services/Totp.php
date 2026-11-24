@@ -25,4 +25,9 @@ final class Totp
 
         return str_pad((string) ($value % 10 ** self::DIGITS), self::DIGITS, '0', STR_PAD_LEFT);
     }
+
+    public function generateSecret(): string
+    {
+        return Base32::encode(random_bytes(20));
+    }
 }
