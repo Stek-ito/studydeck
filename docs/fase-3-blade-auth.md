@@ -757,3 +757,90 @@ El broker limita **por email**; `throttle:6,1` limita **por IP**, para que nadie
 4. Enlace → email ya relleno → contraseña nueva → login con *"Your password has been reset."*.
 5. Reutilizar el enlace → *"invalid or has expired"*, y la tabla queda con 0 filas.
 6. Token inventado → el mismo error genérico.
+
+---
+
+## Paso 8: 2FA con TOTP implementado a mano
+
+**Objetivo:** un segundo factor ("algo que tienes": el móvil), para que una contraseña filtrada no baste (**A07:2025**). **Symfony:** `scheb/2fa-bundle`.
+
+Se decidió **implementar el algoritmo TOTP a mano** (RFC 6238) en lugar de usar `pragmarx/google2fa`, para entenderlo. En el paso 12 se compara con la librería que usa Fortify.
+
+| Sub-paso | Contenido |
+|---|---|
+| 8.1 | Teoría TOTP |
+| 8.2 | Clase `Totp` + tests con los vectores del RFC |
+| 8.3 | Secreto aleatorio y Base32 |
+| 8.4 | Migración: columnas cifradas en `users` |
+| 8.5 | Activar: ajustes, URI `otpauth://`, confirmar con un código |
+| 8.6 | Challenge en el login: ventana ±1, `hash_equals`, anti-replay, rate limiting |
+| 8.7 | Códigos de recuperación |
+| 8.8 | Desactivar |
+
+### 8.1. Teoría
+
+`código = TOTP(secreto, hora)`. El móvil y el servidor calculan cada uno por su cuenta, sin comunicarse: solo comparten el secreto (una vez, con el QR) y la hora.
+
+```
+1. contador = floor(unix_time / 30)          ventanas de 30 s
+2. hash     = HMAC-SHA1(secreto, contador)   20 bytes (el contador como 8 bytes big-endian)
+3. truncado dinámico: offset = 4 bits bajos del último byte; 4 bytes desde el offset, sin el bit de signo
+4. código   = valor % 1.000.000, con ceros a la izquierda hasta 6 dígitos
+```
+
+| Regla de seguridad | Por qué |
+|---|---|
+| Aceptar ±1 ventana | desfase de los relojes |
+| `hash_equals()` en lugar de `===` | `===` se para en el primer carácter distinto: *timing attack* |
+| No aceptar dos veces el mismo código | *replay* (alguien que lo ve por encima del hombro) |
+| Rate limiting | solo hay 10⁶ códigos posibles |
+| Secreto cifrado en la BD | con él se generan los códigos (**A04:2025**) |
+
+### 8.2. `app/Services/Totp.php`
+
+```php
+final class Totp
+{
+    private const PERIOD = 30;
+    private const DIGITS = 6;
+
+    public function code(string $secret, int $timestamp): string   // $secret en binario, no Base32
+    {
+        $counter = intdiv($timestamp, self::PERIOD);
+        $binaryCounter = pack('J', $counter);                          // 64 bits, big-endian, sin signo
+        $hash = hash_hmac('sha1', $binaryCounter, $secret, true);      // true = bytes crudos
+        $offset = ord($hash[19]) & 0x0F;                               // 0-15
+        $value = unpack('N', substr($hash, $offset, 4))[1] & 0x7FFFFFFF; // 32 bits big-endian, positivo
+
+        return str_pad((string) ($value % 10 ** self::DIGITS), self::DIGITS, '0', STR_PAD_LEFT);
+    }
+}
+```
+
+- Es lógica pura, en un servicio (≈ `src/Service/` de Symfony). No toca la base de datos ni HTTP, así que se prueba con PHPUnit puro.
+- `pack('J')` es imprescindible: el RFC exige los 8 bytes del contador, no su texto.
+
+**Test** (`php artisan make:test TotpTest --unit`, que extiende `PHPUnit\Framework\TestCase`):
+
+```php
+#[DataProvider('rfc6238Vectors')]
+public function test_it_generates_rfc_6238_codes(int $timestamp, string $expected): void
+{
+    $this->assertSame($expected, (new Totp())->code('12345678901234567890', $timestamp));
+}
+
+public static function rfc6238Vectors(): array
+{
+    return [
+        'T=59' => [59, '287082'],
+        'T=1111111109' => [1111111109, '081804'],
+        'T=1111111111' => [1111111111, '050471'],
+        'T=1234567890' => [1234567890, '005924'],
+        'T=2000000000' => [2000000000, '279037'],
+    ];
+}
+```
+
+- Son los vectores oficiales del RFC 6238 (los 6 últimos dígitos de los 8 publicados). `081804` y `005924` prueban el relleno con ceros.
+- `assertSame` y no `assertEquals`: compara tipo y valor, como `===`.
+- Resultado: `5 passed` con `php artisan test --filter=TotpTest`.
