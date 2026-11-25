@@ -868,3 +868,48 @@ public function generateSecret(): string
 
 - Lo aleatorio no se compara con un valor fijo: se comprueba su **forma** (longitud y alfabeto).
 - Resultado: `8 passed`.
+
+### 8.4. Migración: columnas 2FA cifradas
+
+`php artisan make:migration add_two_factor_columns_to_users_table --table=users`
+
+```php
+$table->text('two_factor_secret')->nullable()->after('remember_token');
+$table->text('two_factor_recovery_codes')->nullable()->after('two_factor_secret');
+$table->timestamp('two_factor_confirmed_at')->nullable()->after('two_factor_recovery_codes');
+$table->unsignedBigInteger('two_factor_last_used_step')->nullable()->after('two_factor_confirmed_at');
+// down(): $table->dropColumn([...las 4...]);
+```
+
+| Columna | Por qué |
+|---|---|
+| `two_factor_secret` | **cifrado**, no hasheado: el servidor necesita el valor original para calcular códigos |
+| `two_factor_recovery_codes` | cifrados; se usan en 8.7 |
+| `two_factor_confirmed_at` | activación en dos fases: secreto guardado + `null` = pendiente; con fecha = activo. Evita dejar fuera al usuario si no llega a escanear el QR |
+| `two_factor_last_used_step` | anti-replay: se rechaza cualquier código con contador ≤ al guardado |
+
+- **`text` y no `string`:** el valor cifrado (JSON en base64 con `iv`, `value`, `mac`, `tag`) ocupa ~200 caracteres para un secreto de 32; en `varchar(255)` se truncaría.
+
+**Modelo `User`:**
+
+```php
+#[Hidden(['password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes'])]
+// casts():
+'two_factor_secret' => 'encrypted',             // AES-256-CBC + HMAC-SHA256 con APP_KEY
+'two_factor_recovery_codes' => 'encrypted:array',
+'two_factor_confirmed_at' => 'datetime',
+```
+
+- `#[Hidden]`: el cast devuelve el valor **descifrado**; sin esto, un `return $user` lo sacaría en claro en el JSON.
+- No están en `#[Fillable]` (mass assignment): se asignan con `forceFill`.
+- **Symfony:** Doctrine no trae columnas cifradas (tipo DBAL propio con `sodium_crypto_secretbox` o un bundle), y `scheb/2fa-bundle` guarda el secreto en claro por defecto.
+- **Rotar la `APP_KEY`:** si cambia, los secretos guardados ya no se descifran. La clave antigua va en `APP_PREVIOUS_KEYS`.
+
+**Comprobado en Tinker:**
+
+| Prueba | Resultado |
+|---|---|
+| `DB::table('users')->where('id', 1)->value('two_factor_secret')` | `eyJpdiI6...` (cifrado) |
+| `$user->fresh()->two_factor_secret` | 32 caracteres Base32 (descifrado por el cast) |
+| `array_key_exists('two_factor_secret', $user->toArray())` | `false` (`#[Hidden]`) |
+| Manipular el valor en la BD y leerlo | `DecryptException: The payload is invalid.` (la MAC detecta el cambio, **A04:2025**) |
